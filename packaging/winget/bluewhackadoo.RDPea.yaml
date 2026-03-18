@@ -23,7 +23,7 @@ Installers:
   - Architecture: x64
     InstallerType: exe
     InstallerUrl: https://github.com/bluewhackadoo/RDPea/releases/download/v1.0.3/RDPea-Setup-1.0.3.exe
-    InstallerSha256: a7bcbbd5dd8968f5b7741a6e1232661e929a6278bb3e1f28006f3fb63c580e3d
+    InstallerSha256: 70cfa21303d4e57c6b67abc012021b8f1d89a5b762855703ce7a11b357373146
     Scope: user
     InstallerSwitches:
       Silent: /S

@@ -126,7 +126,7 @@ if (Test-Path $WingetManifest) {
     # Update SHA256
     $SetupHash = $Hashes["RDPea-Setup-$Version.exe"]
     if ($SetupHash) {
-        $Content = $Content -replace 'InstallerSha256: [a-f0-9]+', "InstallerSha256: $SetupHash"
+        $Content = $Content -replace 'InstallerSha256: [a-fA-F0-9]+', "InstallerSha256: $SetupHash"
     }
     
     # Update release notes URL
@@ -167,7 +167,7 @@ if (Test-Path $ChocoInstall) {
     # Update checksum
     $SetupHash = $Hashes["RDPea-Setup-$Version.exe"]
     if ($SetupHash) {
-        $Content = $Content -replace "checksum64\s*=\s*'[a-f0-9]+'", "checksum64    = '$SetupHash'"
+        $Content = $Content -replace "checksum64\s*=\s*'[a-fA-F0-9]+'", "checksum64    = '$SetupHash'"
     }
     
     Set-Content -Path $ChocoInstall -Value $Content -NoNewline
@@ -186,7 +186,7 @@ if (Test-Path $HomebrewFormula) {
     # Update ARM64 SHA256 (default)
     $Arm64Hash = $Hashes["RDPea-$Version-arm64.dmg"]
     if ($Arm64Hash) {
-        $Content = $Content -replace 'sha256 "[a-f0-9]+"', "sha256 `"$Arm64Hash`""
+        $Content = $Content -replace 'sha256 "[a-fA-F0-9]+"', "sha256 `"$Arm64Hash`""
     }
     
     # Note: Intel SHA256 would need separate handling in the formula
