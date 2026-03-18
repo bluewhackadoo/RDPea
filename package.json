@@ -2,7 +2,10 @@
   "name": "rdpea",
   "version": "1.0.3",
   "description": "Lightweight RDP Remote Desktop Client",
-  "author": "bluewhackadoo",
+  "author": {
+    "name": "bluewhackadoo",
+    "email": "bluewhackadoo@users.noreply.github.com"
+  },
   "license": "MIT",
   "main": "dist-electron/main.js",
   "scripts": {
