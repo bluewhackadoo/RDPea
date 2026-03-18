@@ -1,0 +1,72 @@
+name: rdpea
+version: '1.0.3'
+summary: Lightweight RDP Remote Desktop Client
+description: |
+  A fast, modern Remote Desktop Protocol (RDP) client built with Electron, 
+  React, and TailwindCSS. Manage multiple PC connections with encrypted 
+  credential storage, independently pinnable windows, and full video/audio support.
+
+  Features:
+  - Encrypted Storage - All connections and credentials are encrypted with AES-256-GCM
+  - Multiple Connections - Save and organize unlimited RDP connections
+  - Independently Pinnable Windows - Each connection opens in its own window
+  - Dynamic Resizing - Session windows resize dynamically
+  - Native RDP Protocol - Pure TypeScript RDP implementation
+  - Full Audio Support - RDPSND virtual channel with Web Audio API
+  - Modern UI - Dark theme, glass morphism, smooth animations
+  - NLA/TLS Security - NTLMv2 authentication via CredSSP
+  - Clipboard Support - Clipboard virtual channel for copy/paste
+
+grade: stable
+confinement: strict
+base: core22
+
+architectures:
+  - build-on: amd64
+
+apps:
+  rdpea:
+    command: rdpea
+    extensions: [gnome]
+    plugs:
+      - home
+      - network
+      - network-bind
+      - audio-playback
+      - desktop
+      - desktop-legacy
+      - wayland
+      - x11
+      - unity7
+      - browser-support
+      - gsettings
+      - opengl
+      - pulseaudio
+
+parts:
+  rdpea:
+    plugin: dump
+    source: https://github.com/bluewhackadoo/RDPea/releases/download/v$SNAPCRAFT_PROJECT_VERSION/RDPea-$SNAPCRAFT_PROJECT_VERSION-x86_64.AppImage
+    source-type: file
+    override-build: |
+      craftctl default
+      # Extract AppImage
+      chmod +x RDPea-*.AppImage
+      ./RDPea-*.AppImage --appimage-extract
+      cp -r squashfs-root/* $CRAFT_PART_INSTALL/
+      # Create wrapper script
+      cat > $CRAFT_PART_INSTALL/rdpea << 'EOF'
+      #!/bin/bash
+      exec "$SNAP/AppRun" "$@"
+      EOF
+      chmod +x $CRAFT_PART_INSTALL/rdpea
+    stage-packages:
+      - libnspr4
+      - libnss3
+      - libatk1.0-0
+      - libatk-bridge2.0-0
+      - libcups2
+      - libdrm2
+      - libgtk-3-0
+      - libgbm1
+      - libasound2

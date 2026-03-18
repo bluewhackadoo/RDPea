@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>rdpea</id>
+    <version>1.0.3</version>
+    <packageSourceUrl>https://github.com/bluewhackadoo/RDPea</packageSourceUrl>
+    <owners>bluewhackadoo</owners>
+    <title>RDPea</title>
+    <authors>bluewhackadoo</authors>
+    <projectUrl>https://github.com/bluewhackadoo/RDPea</projectUrl>
+    <iconUrl>https://raw.githubusercontent.com/bluewhackadoo/RDPea/main/build/icon.png</iconUrl>
+    <licenseUrl>https://github.com/bluewhackadoo/RDPea/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/bluewhackadoo/RDPea</projectSourceUrl>
+    <docsUrl>https://github.com/bluewhackadoo/RDPea/blob/main/README.md</docsUrl>
+    <bugTrackerUrl>https://github.com/bluewhackadoo/RDPea/issues</bugTrackerUrl>
+    <tags>rdp remote-desktop electron react desktop</tags>
+    <summary>Lightweight RDP Remote Desktop Client</summary>
+    <description>
+A fast, modern Remote Desktop Protocol (RDP) client built with Electron, React, and TailwindCSS. 
+
+## Features
+- Encrypted Storage - All connections and credentials are encrypted with AES-256-GCM
+- Multiple Connections - Save and organize unlimited RDP connections
+- Independently Pinnable Windows - Each connection opens in its own window
+- Dynamic Resizing - Session windows resize dynamically
+- Native RDP Protocol - Pure TypeScript RDP implementation
+- Full Audio Support - RDPSND virtual channel with Web Audio API
+- Modern UI - Dark theme, glass morphism, smooth animations
+- NLA/TLS Security - NTLMv2 authentication via CredSSP
+- Clipboard Support - Clipboard virtual channel for copy/paste
+    </description>
+    <releaseNotes>https://github.com/bluewhackadoo/RDPea/releases/tag/v1.0.3</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

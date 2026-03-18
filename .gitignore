@@ -1,0 +1,23 @@
+node_modules/
+dist/
+dist-electron/
+release/
+rdpea-bin/*.exe
+rdpea-bin/*.dmg
+rdpea-bin/*.AppImage
+rdpea-bin/*.deb
+rdpea-bin/*.zip
+*.enc
+.env
+.DS_Store
+Thumbs.db
+
+# Code signing certificates - NEVER commit these!
+certs/
+*.pfx
+*.p12
+*.cer
+*.pem
+
+CODE_SIGNING.md
+DISTRIBUTION.md
