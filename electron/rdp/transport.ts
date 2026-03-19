@@ -16,29 +16,59 @@ export class RdpTransport extends EventEmitter {
 
   async connect(host: string, port: number): Promise<void> {
     console.log(`[RDP:Transport] Connecting to ${host}:${port}`);
-    return new Promise((resolve, reject) => {
-      const socket = net.createConnection({ host, port }, () => {
-        this._connected = true;
-        console.log(`[RDP:Transport] TCP connected to ${host}:${port}`);
-        this.emit('connect');
-        resolve();
-      });
 
-      socket.on('data', (data: Buffer) => this.onData(data));
-      socket.on('error', (err: Error) => {
-        console.error(`[RDP:Transport] Socket error: ${err.message}`);
-        this._connected = false;
+    // Happy-eyeballs: try default (may be IPv6) with a short timeout,
+    // then fall back to explicit IPv4 if it fails or takes too long.
+    const tryConnect = (family?: 4 | 6): Promise<net.Socket> => {
+      return new Promise((resolve, reject) => {
+        const opts: net.NetConnectOpts = { host, port };
+        if (family) (opts as any).family = family;
+        const sock = net.createConnection(opts, () => resolve(sock));
+        sock.once('error', (err: Error) => {
+          sock.destroy();
+          reject(err);
+        });
+      });
+    };
+
+    let socket: net.Socket;
+    try {
+      // Race default connect against a 2-second timeout
+      socket = await Promise.race([
+        tryConnect(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Connection timeout (IPv6?)')), 2000)
+        ),
+      ]);
+    } catch (firstErr) {
+      console.warn(`[RDP:Transport] Default connect failed (${(firstErr as Error).message}), retrying IPv4…`);
+      try {
+        socket = await tryConnect(4);
+      } catch (v4Err) {
+        const err = v4Err as Error;
+        console.error(`[RDP:Transport] IPv4 fallback also failed: ${err.message}`);
         this.emit('error', err);
-        reject(err);
-      });
-      socket.on('close', () => {
-        this._connected = false;
-        this.emit('close');
-      });
+        throw err;
+      }
+    }
 
-      this.socket = socket;
-      this.rawSocket = socket;
+    this._connected = true;
+    console.log(`[RDP:Transport] TCP connected to ${host}:${port}`);
+
+    socket.on('data', (data: Buffer) => this.onData(data));
+    socket.on('error', (err: Error) => {
+      console.error(`[RDP:Transport] Socket error: ${err.message}`);
+      this._connected = false;
+      this.emit('error', err);
     });
+    socket.on('close', () => {
+      this._connected = false;
+      this.emit('close');
+    });
+
+    this.socket = socket;
+    this.rawSocket = socket;
+    this.emit('connect');
   }
 
   // Upgrade the current TCP connection to TLS

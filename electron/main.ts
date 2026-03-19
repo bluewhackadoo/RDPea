@@ -153,12 +153,21 @@ function launchRdpConnection(conn: any): { success: boolean; error?: string } {
       return { success: true }; // already connected
     }
 
+    // If no domain/workgroup specified, use the server hostname as fallback
+    // (strip port, take first label of FQDN, uppercase — mimics Windows RDP client)
+    let domain = conn.domain || '';
+    if (!domain) {
+      const hostPart = (conn.host || '').split(':')[0]; // strip port if present
+      const label = hostPart.split('.')[0];             // first DNS label
+      domain = label.toUpperCase();
+    }
+
     const config: RdpClientConfig = {
       host: conn.host,
       port: conn.port || 3389,
       username: conn.username || '',
       password: conn.password || '',
-      domain: conn.domain || '',
+      domain,
       width: conn.width || 1920,
       height: conn.height || 1080,
       colorDepth: 16,
