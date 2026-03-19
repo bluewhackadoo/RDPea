@@ -47,17 +47,16 @@ async function convertSvgToIcons() {
     console.log('Icon generated: build/icon.ico');
 
     // Generate multiple sizes in build/icons/ for Linux desktop integration
+    // electron-builder expects files named {size}x{size}.png directly in the directory
     const iconsDir = path.join(outDir, 'icons');
     if (!fs.existsSync(iconsDir)) fs.mkdirSync(iconsDir, { recursive: true });
     const linuxSizes = [16, 32, 48, 64, 128, 256, 512];
     await Promise.all(
       linuxSizes.map(async (size) => {
-        const sizeDir = path.join(iconsDir, `${size}x${size}`);
-        if (!fs.existsSync(sizeDir)) fs.mkdirSync(sizeDir, { recursive: true });
         await sharp(svgBuffer)
           .resize(size, size, { fit: 'contain', background: TRANSPARENT })
           .png()
-          .toFile(path.join(sizeDir, 'icon.png'));
+          .toFile(path.join(iconsDir, `${size}x${size}.png`));
       })
     );
     console.log('Icons generated: build/icons/ (Linux multi-size)');
