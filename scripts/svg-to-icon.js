@@ -15,38 +15,52 @@ async function convertSvgToIcons() {
       process.exit(0);
     }
     
-    // Read the SVG logo (now square 143x143)
-    const svgBuffer = fs.readFileSync(svgPath);
+    // Read the SVG and extract just the pea sphere (strip text paths, crop viewBox)
+    let svg = fs.readFileSync(svgPath, 'utf8');
+    // Remove text <path> elements (the ones with long 'd' attrs containing glyph data)
+    svg = svg.replace(/<path d="M[^"]{200,}"[^/]*\/>/g, '');
+    // Crop viewBox to just the pea sphere area (within the translated group: x=74,y=7 size=70x70 + 1px padding)
+    svg = svg.replace(/viewBox="0 0 143 143"/, 'viewBox="73 37 72 72"');
+    const svgBuffer = Buffer.from(svg);
     
-    // Generate 512x512 PNG with the full RDPea logo (macOS requires 512x512 minimum)
+    const TRANSPARENT = { r: 0, g: 0, b: 0, alpha: 0 };
+
+    // Generate 512x512 PNG (macOS requires 512x512 minimum)
     await sharp(svgBuffer)
-      .resize(512, 512, {
-        fit: 'contain',
-        background: { r: 255, g: 255, b: 255, alpha: 1 }
-      })
+      .resize(512, 512, { fit: 'contain', background: TRANSPARENT })
       .png()
       .toFile(path.join(outDir, 'icon.png'));
-    
     console.log('Icon generated: build/icon.png');
     
-    // Generate multiple sizes for ICO
-    const sizes = [16, 32, 48, 256];
+    // Generate multiple sizes for ICO (Windows)
+    const icoSizes = [16, 32, 48, 256];
     const pngBuffers = await Promise.all(
-      sizes.map(size =>
+      icoSizes.map(size =>
         sharp(svgBuffer)
-          .resize(size, size, {
-            fit: 'contain',
-            background: { r: 255, g: 255, b: 255, alpha: 1 }
-          })
+          .resize(size, size, { fit: 'contain', background: TRANSPARENT })
           .png()
           .toBuffer()
       )
     );
-    
-    // Create ICO file manually
-    const ico = createICO(pngBuffers, sizes);
+    const ico = createICO(pngBuffers, icoSizes);
     fs.writeFileSync(path.join(outDir, 'icon.ico'), ico);
     console.log('Icon generated: build/icon.ico');
+
+    // Generate multiple sizes in build/icons/ for Linux desktop integration
+    const iconsDir = path.join(outDir, 'icons');
+    if (!fs.existsSync(iconsDir)) fs.mkdirSync(iconsDir, { recursive: true });
+    const linuxSizes = [16, 32, 48, 64, 128, 256, 512];
+    await Promise.all(
+      linuxSizes.map(async (size) => {
+        const sizeDir = path.join(iconsDir, `${size}x${size}`);
+        if (!fs.existsSync(sizeDir)) fs.mkdirSync(sizeDir, { recursive: true });
+        await sharp(svgBuffer)
+          .resize(size, size, { fit: 'contain', background: TRANSPARENT })
+          .png()
+          .toFile(path.join(sizeDir, 'icon.png'));
+      })
+    );
+    console.log('Icons generated: build/icons/ (Linux multi-size)');
     
   } catch (error) {
     console.error('Error converting SVG:', error);

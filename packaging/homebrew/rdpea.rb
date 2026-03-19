@@ -1,5 +1,5 @@
 cask "rdpea" do
-  version "1.0.3"
+  version "1.0.4"
   sha256 "REPLACE_WITH_ACTUAL_SHA256"
 
   url "https://github.com/bluewhackadoo/RDPea/releases/download/v#{version}/RDPea-#{version}-arm64.dmg"

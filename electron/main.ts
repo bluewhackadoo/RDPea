@@ -104,18 +104,19 @@ function createSessionWindow(connectionId: string, connectionName: string, rdpWi
   }
 
   // Scale window to fit within 85% of the screen work area while preserving aspect ratio
+  const TOOLBAR_HEIGHT = 40; // matches h-10 in SessionView toolbar
   const workArea = screen.getPrimaryDisplay().workAreaSize;
   const maxW = Math.floor(workArea.width * 0.85);
-  const maxH = Math.floor(workArea.height * 0.85);
+  const maxH = Math.floor(workArea.height * 0.85) - TOOLBAR_HEIGHT;
   const scale = Math.min(maxW / rdpWidth, maxH / rdpHeight, 1);
   const winWidth = Math.round(rdpWidth * scale);
-  const winHeight = Math.round(rdpHeight * scale);
+  const winHeight = Math.round(rdpHeight * scale) + TOOLBAR_HEIGHT;
 
   const sessionWin = new BrowserWindow({
     width: winWidth,
     height: winHeight,
     minWidth: 320,
-    minHeight: Math.round(320 * (rdpHeight / rdpWidth)),
+    minHeight: Math.round(320 * (rdpHeight / rdpWidth)) + TOOLBAR_HEIGHT,
     frame: false,
     backgroundColor: '#0f172a',
     title: `RDPea — ${connectionName}`,
@@ -126,9 +127,6 @@ function createSessionWindow(connectionId: string, connectionName: string, rdpWi
       sandbox: true,
     },
   });
-
-  // Lock aspect ratio to the RDP display resolution
-  sessionWin.setAspectRatio(rdpWidth / rdpHeight);
 
   if (isDev) {
     sessionWin.loadURL(`http://localhost:5173/#/session/${connectionId}`);

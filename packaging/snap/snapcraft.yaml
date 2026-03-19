@@ -1,5 +1,5 @@
 name: rdpea
-version: '1.0.3'
+version: '1.0.4'
 summary: Lightweight RDP Remote Desktop Client
 description: |
   A fast, modern Remote Desktop Protocol (RDP) client built with Electron, 

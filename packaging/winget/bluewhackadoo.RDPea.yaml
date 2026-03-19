@@ -1,5 +1,5 @@
 PackageIdentifier: bluewhackadoo.RDPea
-PackageVersion: 1.0.3
+PackageVersion: 1.0.4
 PackageLocale: en-US
 PackageName: RDPea
 Publisher: bluewhackadoo
@@ -18,12 +18,12 @@ PackageUrl: https://github.com/bluewhackadoo/RDPea
 Author: bluewhackadoo
 PublisherUrl: https://github.com/bluewhackadoo
 PublisherSupportUrl: https://github.com/bluewhackadoo/RDPea/issues
-ReleaseNotesUrl: https://github.com/bluewhackadoo/RDPea/releases/tag/v1.0.3
+ReleaseNotesUrl: https://github.com/bluewhackadoo/RDPea/releases/tag/v1.0.4
 Installers:
   - Architecture: x64
     InstallerType: exe
-    InstallerUrl: https://github.com/bluewhackadoo/RDPea/releases/download/v1.0.3/RDPea-Setup-1.0.3.exe
-    InstallerSha256: 70cfa21303d4e57c6b67abc012021b8f1d89a5b762855703ce7a11b357373146
+    InstallerUrl: https://github.com/bluewhackadoo/RDPea/releases/download/v1.0.4/RDPea-Setup-1.0.4.exe
+    InstallerSha256: e685cc418cc4e6b9bf019d3aef62426e53089086603989278f526de133f1ac49
     Scope: user
     InstallerSwitches:
       Silent: /S

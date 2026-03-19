@@ -2,7 +2,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
     <id>rdpea</id>
-    <version>1.0.3</version>
+    <version>1.0.4</version>
     <packageSourceUrl>https://github.com/bluewhackadoo/RDPea</packageSourceUrl>
     <owners>bluewhackadoo</owners>
     <title>RDPea</title>
@@ -30,7 +30,7 @@ A fast, modern Remote Desktop Protocol (RDP) client built with Electron, React, 
 - NLA/TLS Security - NTLMv2 authentication via CredSSP
 - Clipboard Support - Clipboard virtual channel for copy/paste
     </description>
-    <releaseNotes>https://github.com/bluewhackadoo/RDPea/releases/tag/v1.0.3</releaseNotes>
+    <releaseNotes>https://github.com/bluewhackadoo/RDPea/releases/tag/v1.0.4</releaseNotes>
   </metadata>
   <files>
     <file src="tools\**" target="tools" />
