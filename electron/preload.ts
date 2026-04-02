@@ -22,11 +22,20 @@ contextBridge.exposeInMainWorld('rdpea', {
   sendMouse: (connectionId: string, type: string, x: number, y: number, button?: string, wheelDelta?: number) =>
     ipcRenderer.send('rdp:mouse', connectionId, type, x, y, button, wheelDelta),
 
+  // Debug logging
+  setDebug: (connectionId: string, enabled: boolean) =>
+    ipcRenderer.send('rdp:set-debug', connectionId, enabled),
+
   // Session windows
   openSessionWindow: (connectionId: string, connectionName: string) =>
     ipcRenderer.send('session:open-window', connectionId, connectionName),
 
   // Events from main process
+  onDebugLog: (callback: (connectionId: string, message: string) => void) => {
+    const handler = (_event: any, connectionId: string, message: string) => callback(connectionId, message);
+    ipcRenderer.on('rdp:debug-log', handler);
+    return () => ipcRenderer.removeListener('rdp:debug-log', handler);
+  },
   onFrame: (callback: (connectionId: string, rects: any[]) => void) => {
     const handler = (_event: any, connectionId: string, rects: any[]) => callback(connectionId, rects);
     ipcRenderer.on('rdp:frame', handler);

@@ -14,6 +14,10 @@ export interface RdpConnection {
   redirectClipboard: boolean;
   redirectDrives: boolean;
   redirectPrinters: boolean;
+  captureWindowsKey: boolean;
+  hyperVEnabled: boolean;
+  hyperVHost: string;
+  hyperVVmName: string;
   group: string;
   notes: string;
   tags: string[];
@@ -71,7 +75,9 @@ declare global {
       getStatus: (connectionId: string) => Promise<boolean>;
       sendKeyboard: (connectionId: string, type: 'keydown' | 'keyup', scanCode: number, extended: boolean) => void;
       sendMouse: (connectionId: string, type: string, x: number, y: number, button?: string, wheelDelta?: number) => void;
+      setDebug: (connectionId: string, enabled: boolean) => void;
       openSessionWindow: (connectionId: string, connectionName: string) => void;
+      onDebugLog: (callback: (connectionId: string, message: string) => void) => () => void;
       onFrame: (callback: (connectionId: string, rects: BitmapRectIPC[]) => void) => () => void;
       onAudio: (callback: (connectionId: string, audioData: AudioDataIPC) => void) => () => void;
       onConnected: (callback: (connectionId: string, info?: { width: number; height: number }) => void) => () => void;

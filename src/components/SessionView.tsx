@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom';
 import {
   Pin, PinOff, Maximize2, Volume2, VolumeX,
   WifiOff, ArrowLeft, Loader2, Minus, Square, X,
-  Monitor, PanelTopClose, PanelTop,
+  Monitor, PanelTopClose, PanelTop, Bug, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { BitmapRectIPC, AudioDataIPC } from '../types';
 
@@ -73,6 +73,14 @@ const DOM_TO_SCANCODE: Record<string, { code: number; extended: boolean }> = {
   MediaPlayPause: { code: 0x22, extended: true },
 };
 
+// Modifier key codes that can get "stuck" when focus leaves the window
+const MODIFIER_CODES = [
+  'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight',
+  'ShiftLeft', 'ShiftRight', 'MetaLeft', 'MetaRight',
+];
+
+const MAX_DEBUG_LINES = 500;
+
 export function SessionView() {
   const { connectionId } = useParams<{ connectionId: string }>();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -83,6 +91,8 @@ export function SessionView() {
   const mouseMoveTimeRef = useRef<number>(0);
   const lastHintRef = useRef(false);
   const imgBufRef = useRef<Uint8ClampedArray | null>(null);
+  const pressedModifiersRef = useRef<Set<string>>(new Set());
+  const debugEndRef = useRef<HTMLDivElement>(null);
 
   const [isPinned, setIsPinned] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
@@ -93,6 +103,9 @@ export function SessionView() {
   const [showToolbar, setShowToolbar] = useState(true);
   const [toolbarHint, setToolbarHint] = useState(false);
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [debugMode, setDebugMode] = useState(false);
+  const [debugOpen, setDebugOpen] = useState(false);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
 
   // ── Frame rendering with requestAnimationFrame batching ─────────
   const pendingRectsRef = useRef<BitmapRectIPC[]>([]);
@@ -222,11 +235,20 @@ export function SessionView() {
       if (id === connectionId) { setErrorMsg(msg); setIsConnecting(false); }
     });
 
+    const unsubDebug = window.rdpea.onDebugLog((id, msg) => {
+      if (id === connectionId) {
+        setDebugLogs(prev => {
+          const next = [...prev, msg];
+          return next.length > MAX_DEBUG_LINES ? next.slice(-MAX_DEBUG_LINES) : next;
+        });
+      }
+    });
+
     // Check initial status
     window.rdpea.getStatus(connectionId).then(setIsConnected);
 
     return () => {
-      unsubFrame(); unsubAudio(); unsubConnected(); unsubDisconnected(); unsubError();
+      unsubFrame(); unsubAudio(); unsubConnected(); unsubDisconnected(); unsubError(); unsubDebug();
       if (rafIdRef.current) { cancelAnimationFrame(rafIdRef.current); rafIdRef.current = 0; }
     };
   }, [connectionId, renderFrame, playAudio]);
@@ -245,14 +267,37 @@ export function SessionView() {
       const mapping = DOM_TO_SCANCODE[e.code];
       if (!mapping) return;
       const type = e.type === 'keydown' ? 'keydown' : 'keyup';
+
+      // Track modifier key state for stuck-key prevention
+      if (MODIFIER_CODES.includes(e.code)) {
+        if (type === 'keydown') pressedModifiersRef.current.add(e.code);
+        else pressedModifiersRef.current.delete(e.code);
+      }
+
       window.rdpea.sendKeyboard(connectionId, type, mapping.code, mapping.extended);
+    };
+
+    // Release all pressed modifiers when the window loses focus
+    // (prevents Alt/Ctrl getting "stuck" after Alt-Tab etc.)
+    const handleBlur = () => {
+      pressedModifiersRef.current.forEach((code) => {
+        const mapping = DOM_TO_SCANCODE[code];
+        if (mapping) {
+          window.rdpea.sendKeyboard(connectionId, 'keyup', mapping.code, mapping.extended);
+        }
+      });
+      pressedModifiersRef.current.clear();
     };
 
     window.addEventListener('keydown', handleKey, true);
     window.addEventListener('keyup', handleKey, true);
+    window.addEventListener('blur', handleBlur);
     return () => {
       window.removeEventListener('keydown', handleKey, true);
       window.removeEventListener('keyup', handleKey, true);
+      window.removeEventListener('blur', handleBlur);
+      // Also release any stuck modifiers on cleanup
+      handleBlur();
     };
   }, [connectionId, isConnected, ensureAudioCtx]);
 
@@ -360,6 +405,13 @@ export function SessionView() {
     }
   };
 
+  // Auto-scroll debug panel when new logs arrive
+  useEffect(() => {
+    if (debugOpen && debugEndRef.current) {
+      debugEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [debugLogs, debugOpen]);
+
   // Cleanup hint timer
   useEffect(() => {
     return () => { if (hintTimerRef.current) clearTimeout(hintTimerRef.current); };
@@ -401,6 +453,20 @@ export function SessionView() {
               title={isPinned ? 'Unpin window' : 'Pin window on top'}
             >
               {isPinned ? <Pin className="w-3.5 h-3.5" /> : <PinOff className="w-3.5 h-3.5" />}
+            </button>
+            <button
+              onClick={() => {
+                const next = !debugMode;
+                setDebugMode(next);
+                setDebugOpen(next);
+                if (connectionId) window.rdpea?.setDebug(connectionId, next);
+              }}
+              className={`p-1.5 rounded transition-colors ${
+                debugMode ? 'text-amber-400 hover:bg-amber-500/20' : 'text-surface-400 hover:bg-surface-700'
+              }`}
+              title={debugMode ? 'Disable debug logging' : 'Enable debug logging'}
+            >
+              <Bug className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={hideToolbar}
@@ -492,6 +558,39 @@ export function SessionView() {
           </div>
         )}
       </div>
+
+      {/* ── Debug log panel ── */}
+      {debugMode && (
+        <div className="shrink-0 bg-surface-950 border-t border-surface-700/50">
+          <div
+            className="flex items-center justify-between px-3 py-1 cursor-pointer select-none hover:bg-surface-900/60"
+            onClick={() => setDebugOpen(prev => !prev)}
+          >
+            <div className="flex items-center gap-2">
+              <Bug className="w-3 h-3 text-amber-400" />
+              <span className="text-xs font-medium text-surface-400">Debug Log</span>
+              <span className="text-xs text-surface-600">({debugLogs.length})</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={(e) => { e.stopPropagation(); setDebugLogs([]); }}
+                className="text-xs text-surface-500 hover:text-surface-300 px-1"
+              >
+                Clear
+              </button>
+              {debugOpen ? <ChevronDown className="w-3 h-3 text-surface-500" /> : <ChevronUp className="w-3 h-3 text-surface-500" />}
+            </div>
+          </div>
+          {debugOpen && (
+            <div className="h-40 overflow-y-auto font-mono text-[10px] leading-4 text-surface-400 px-3 pb-2 scrollbar-thin">
+              {debugLogs.map((line, i) => (
+                <div key={i} className={line.includes('ERROR') ? 'text-red-400' : ''}>{line}</div>
+              ))}
+              <div ref={debugEndRef} />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

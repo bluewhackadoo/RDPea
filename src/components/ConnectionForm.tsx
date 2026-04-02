@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   X, Save, Monitor, Globe, User, Lock, Shield, Volume2,
   Clipboard, HardDrive, Printer, Tag, FileText, Palette,
+  Keyboard, Server,
 } from 'lucide-react';
 import { RdpConnection } from '../types';
 import { createDefaultConnection } from '../hooks/useConnections';
@@ -19,7 +20,7 @@ const PRESET_COLORS = [
   '#84cc16', '#a855f7',
 ];
 
-type TabName = 'general' | 'display' | 'resources' | 'gateway' | 'notes';
+type TabName = 'general' | 'display' | 'resources' | 'hyperv' | 'gateway' | 'notes';
 
 export function ConnectionForm({ connection, groups, onSave, onCancel }: ConnectionFormProps) {
   const [form, setForm] = useState<RdpConnection>(
@@ -57,6 +58,7 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
     { key: 'general', label: 'General' },
     { key: 'display', label: 'Display' },
     { key: 'resources', label: 'Resources' },
+    { key: 'hyperv', label: 'Hyper-V' },
     { key: 'gateway', label: 'Gateway' },
     { key: 'notes', label: 'Notes' },
   ];
@@ -368,7 +370,65 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
                   <Printer className="w-4 h-4 text-surface-400 group-hover:text-surface-200" />
                   <span className="text-sm text-surface-300 group-hover:text-surface-100">Printers</span>
                 </label>
+
+                <label className="flex items-center gap-3 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={form.captureWindowsKey}
+                    onChange={(e) => update('captureWindowsKey', e.target.checked)}
+                    className="w-4 h-4 rounded border-surface-500 bg-surface-800 text-primary-500 focus:ring-primary-500/50"
+                  />
+                  <Keyboard className="w-4 h-4 text-surface-400 group-hover:text-surface-200" />
+                  <span className="text-sm text-surface-300 group-hover:text-surface-100">Capture Windows Key</span>
+                </label>
               </div>
+              <p className="text-xs text-surface-500 mt-1">
+                When enabled, the Windows key is forwarded to the remote session (best in full-screen).
+              </p>
+            </>
+          )}
+
+          {activeTab === 'hyperv' && (
+            <>
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={form.hyperVEnabled}
+                  onChange={(e) => update('hyperVEnabled', e.target.checked)}
+                  className="w-4 h-4 rounded border-surface-500 bg-surface-800 text-primary-500 focus:ring-primary-500/50"
+                />
+                <Server className="w-4 h-4 text-surface-400 group-hover:text-surface-200" />
+                <span className="text-sm text-surface-300 group-hover:text-surface-100">Enable Hyper-V VM Management</span>
+              </label>
+
+              {form.hyperVEnabled && (
+                <div className="space-y-3 pl-7">
+                  <div>
+                    <label className="block text-xs font-medium text-surface-400 mb-1">VM Name</label>
+                    <input
+                      type="text"
+                      value={form.hyperVVmName}
+                      onChange={(e) => update('hyperVVmName', e.target.value)}
+                      placeholder="My Virtual Machine"
+                      className="input-field"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-surface-400 mb-1">Hyper-V Host (optional)</label>
+                    <input
+                      type="text"
+                      value={form.hyperVHost}
+                      onChange={(e) => update('hyperVHost', e.target.value)}
+                      placeholder="Leave blank for localhost"
+                      className="input-field"
+                    />
+                  </div>
+                  <div className="p-3 glass rounded-lg text-sm text-surface-400">
+                    <p>On connect the VM will be started or resumed. On disconnect it will be saved.</p>
+                    <p className="mt-1 text-xs text-surface-500">Requires Hyper-V PowerShell module and appropriate permissions.</p>
+                  </div>
+                </div>
+              )}
             </>
           )}
 

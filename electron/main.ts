@@ -1,8 +1,9 @@
-import { app, BrowserWindow, ipcMain, screen, shell, Tray, Menu, nativeImage, clipboard, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, screen, shell, Tray, Menu, nativeImage, clipboard, dialog, globalShortcut } from 'electron';
 import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
 import { autoUpdater } from 'electron-updater';
+import { exec } from 'child_process';
 import { RdpClient, RdpClientConfig } from './rdp';
 
 const isDev = !app.isPackaged;
@@ -12,6 +13,8 @@ let tray: Tray | null = null;
 const sessionWindows = new Map<string, BrowserWindow>();
 const rdpClients = new Map<string, RdpClient>();
 const clipboardPollers = new Map<string, ReturnType<typeof setInterval>>();
+const debugConnections = new Set<string>();
+const hyperVConnections = new Map<string, { host: string; vmName: string }>();
 let lastKnownClipboardText = '';
 
 // ── Encrypted Storage ────────────────────────────────────────────────
@@ -144,11 +147,63 @@ function createSessionWindow(connectionId: string, connectionName: string, rdpWi
   });
 }
 
+// ── Hyper-V Management ───────────────────────────────────────────────
+function runPowerShell(cmd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec(`powershell.exe -NoProfile -Command "${cmd.replace(/"/g, '\\"')}"`, (err, stdout, stderr) => {
+      if (err) reject(new Error(stderr || err.message));
+      else resolve(stdout.trim());
+    });
+  });
+}
+
+async function hyperVStartOrResume(host: string, vmName: string): Promise<void> {
+  const remote = host ? `-ComputerName ${host} ` : '';
+  try {
+    const state = await runPowerShell(`(Get-VM ${remote}-Name '${vmName}').State`);
+    console.log(`[HyperV] VM "${vmName}" state: ${state}`);
+    if (state === 'Off' || state === 'Stopped') {
+      await runPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
+      console.log(`[HyperV] Started VM "${vmName}"`);
+    } else if (state === 'Paused' || state === 'Saved') {
+      await runPowerShell(`Resume-VM ${remote}-Name '${vmName}'`);
+      console.log(`[HyperV] Resumed VM "${vmName}"`);
+    } else {
+      console.log(`[HyperV] VM "${vmName}" already in state: ${state}`);
+    }
+  } catch (err: any) {
+    console.error(`[HyperV] Failed to start/resume "${vmName}":`, err.message);
+  }
+}
+
+async function hyperVSave(host: string, vmName: string): Promise<void> {
+  const remote = host ? `-ComputerName ${host} ` : '';
+  try {
+    await runPowerShell(`Save-VM ${remote}-Name '${vmName}'`);
+    console.log(`[HyperV] Saved VM "${vmName}"`);
+  } catch (err: any) {
+    console.error(`[HyperV] Failed to save "${vmName}":`, err.message);
+  }
+}
+
+function sendDebugLog(connectionId: string, message: string): void {
+  if (!debugConnections.has(connectionId)) return;
+  const sessionWin = sessionWindows.get(connectionId);
+  if (sessionWin && !sessionWin.isDestroyed()) {
+    sessionWin.webContents.send('rdp:debug-log', connectionId, `[${new Date().toISOString().slice(11, 23)}] ${message}`);
+  }
+}
+
 // ── Native RDP Client Management ─────────────────────────────────────
 function launchRdpConnection(conn: any): { success: boolean; error?: string } {
   try {
     if (rdpClients.has(conn.id)) {
-      return { success: true }; // already connected
+      const existing = rdpClients.get(conn.id)!;
+      if (existing.isConnected()) {
+        return { success: true }; // genuinely still connected
+      }
+      // Stale/dead client — clean up before reconnecting
+      terminateRdpClient(conn.id);
     }
 
     // If no domain/workgroup specified, use the server hostname as fallback
@@ -174,11 +229,21 @@ function launchRdpConnection(conn: any): { success: boolean; error?: string } {
       security: 'any',
     };
 
+    // Hyper-V: start/resume VM before connecting RDP
+    if (conn.hyperVEnabled && conn.hyperVVmName) {
+      sendDebugLog(conn.id, `[HyperV] Starting/resuming VM "${conn.hyperVVmName}"…`);
+      hyperVStartOrResume(conn.hyperVHost || '', conn.hyperVVmName).catch(() => {});
+      hyperVConnections.set(conn.id, { host: conn.hyperVHost || '', vmName: conn.hyperVVmName });
+    }
+
     // Open session window immediately, sized to match connection resolution
     createSessionWindow(conn.id, conn.name || conn.host, config.width, config.height);
 
     const client = new RdpClient(config);
     rdpClients.set(conn.id, client);
+
+    // Forward RDP client log messages to the session window when debug mode is on
+    client.on('log', (msg: string) => sendDebugLog(conn.id, msg));
 
     // Forward bitmap frames to session window only (raw Uint8Array, no base64)
     client.on('bitmap', (rects: Array<{ x: number; y: number; width: number; height: number; data: Buffer }>) => {
@@ -239,6 +304,13 @@ function launchRdpConnection(conn: any): { success: boolean; error?: string } {
       // Stop clipboard polling for this connection
       const poller = clipboardPollers.get(conn.id);
       if (poller) { clearInterval(poller); clipboardPollers.delete(conn.id); }
+      // Hyper-V: save/pause VM on disconnect
+      const hv = hyperVConnections.get(conn.id);
+      if (hv) {
+        sendDebugLog(conn.id, `[HyperV] Saving VM "${hv.vmName}"…`);
+        hyperVSave(hv.host, hv.vmName).catch(() => {});
+        hyperVConnections.delete(conn.id);
+      }
       const sessionWin = sessionWindows.get(conn.id);
       if (sessionWin && !sessionWin.isDestroyed()) {
         sessionWin.webContents.send('rdp:disconnected', conn.id);
@@ -275,6 +347,13 @@ function terminateRdpClient(connectionId: string) {
   }
   const poller = clipboardPollers.get(connectionId);
   if (poller) { clearInterval(poller); clipboardPollers.delete(connectionId); }
+  // Hyper-V: save VM on terminate
+  const hv = hyperVConnections.get(connectionId);
+  if (hv) {
+    hyperVSave(hv.host, hv.vmName).catch(() => {});
+    hyperVConnections.delete(connectionId);
+  }
+  debugConnections.delete(connectionId);
 }
 
 // ── IPC Handlers ─────────────────────────────────────────────────────
@@ -338,6 +417,12 @@ function registerIpcHandlers() {
   // Open session in separate window
   ipcMain.on('session:open-window', (_event, connectionId: string, connectionName: string) => {
     createSessionWindow(connectionId, connectionName);
+  });
+
+  // Debug logging toggle
+  ipcMain.on('rdp:set-debug', (_event, connectionId: string, enabled: boolean) => {
+    if (enabled) debugConnections.add(connectionId);
+    else debugConnections.delete(connectionId);
   });
 
   // Shell

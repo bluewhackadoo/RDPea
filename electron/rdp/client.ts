@@ -56,11 +56,15 @@ export class RdpClient extends EventEmitter {
   private licensingDone = false;
 
   private log(msg: string, ...args: unknown[]): void {
-    console.log(`[RDP][${this.phase}] ${msg}`, ...args);
+    const full = `[${this.phase}] ${msg}${args.length ? ' ' + args.map(String).join(' ') : ''}`;
+    console.log(`[RDP]${full}`);
+    this.emit('log', full);
   }
 
   private logError(msg: string, ...args: unknown[]): void {
-    console.error(`[RDP][${this.phase}] ERROR: ${msg}`, ...args);
+    const full = `[${this.phase}] ERROR: ${msg}${args.length ? ' ' + args.map(String).join(' ') : ''}`;
+    console.error(`[RDP]${full}`);
+    this.emit('log', full);
   }
 
   constructor(config: types.RdpClientConfig) {
