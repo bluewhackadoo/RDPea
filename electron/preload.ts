@@ -26,6 +26,10 @@ contextBridge.exposeInMainWorld('rdpea', {
   setDebug: (connectionId: string, enabled: boolean) =>
     ipcRenderer.send('rdp:set-debug', connectionId, enabled),
 
+  // Hyper-V management
+  testHyperV: (host: string, vmName: string) => ipcRenderer.invoke('hyperv:test', host, vmName),
+  installHyperVModule: () => ipcRenderer.invoke('hyperv:install-module'),
+
   // Session windows
   openSessionWindow: (connectionId: string, connectionName: string) =>
     ipcRenderer.send('session:open-window', connectionId, connectionName),

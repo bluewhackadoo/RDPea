@@ -2,7 +2,7 @@ import { useState } from 'react';
 import {
   X, Save, Monitor, Globe, User, Lock, Shield, Volume2,
   Clipboard, HardDrive, Printer, Tag, FileText, Palette,
-  Keyboard, Server,
+  Keyboard, Server, Loader2, CheckCircle2, AlertTriangle, Download,
 } from 'lucide-react';
 import { RdpConnection } from '../types';
 import { createDefaultConnection } from '../hooks/useConnections';
@@ -30,6 +30,10 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
   const [newTag, setNewTag] = useState('');
   const [newGroup, setNewGroup] = useState('');
   const [showNewGroup, setShowNewGroup] = useState(false);
+  const [hvTesting, setHvTesting] = useState(false);
+  const [hvResult, setHvResult] = useState<{ success: boolean; state?: string; error?: string; moduleMissing?: boolean } | null>(null);
+  const [hvInstalling, setHvInstalling] = useState(false);
+  const [hvInstallResult, setHvInstallResult] = useState<{ success: boolean; error?: string; needsReboot?: boolean } | null>(null);
 
   const update = <K extends keyof RdpConnection>(key: K, value: RdpConnection[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -408,7 +412,7 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
                     <input
                       type="text"
                       value={form.hyperVVmName}
-                      onChange={(e) => update('hyperVVmName', e.target.value)}
+                      onChange={(e) => { update('hyperVVmName', e.target.value); setHvResult(null); }}
                       placeholder="My Virtual Machine"
                       className="input-field"
                     />
@@ -418,14 +422,111 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
                     <input
                       type="text"
                       value={form.hyperVHost}
-                      onChange={(e) => update('hyperVHost', e.target.value)}
+                      onChange={(e) => { update('hyperVHost', e.target.value); setHvResult(null); }}
                       placeholder="Leave blank for localhost"
                       className="input-field"
                     />
                   </div>
+
+                  {/* Test button */}
+                  <button
+                    type="button"
+                    disabled={!form.hyperVVmName.trim() || hvTesting}
+                    onClick={async () => {
+                      setHvTesting(true); setHvResult(null); setHvInstallResult(null);
+                      try {
+                        const result = await window.rdpea.testHyperV(form.hyperVHost || '', form.hyperVVmName);
+                        setHvResult(result);
+                      } catch (err: any) {
+                        setHvResult({ success: false, error: err.message });
+                      } finally {
+                        setHvTesting(false);
+                      }
+                    }}
+                    className="btn-ghost flex items-center gap-2 text-sm disabled:opacity-40"
+                  >
+                    {hvTesting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Server className="w-3.5 h-3.5" />}
+                    {hvTesting ? 'Testing…' : 'Test Hyper-V Connection'}
+                  </button>
+
+                  {/* Test result */}
+                  {hvResult && (
+                    <div className={`p-3 rounded-lg text-sm flex items-start gap-2 ${
+                      hvResult.success
+                        ? 'bg-green-950/40 border border-green-800/40 text-green-300'
+                        : 'bg-red-950/40 border border-red-800/40 text-red-300'
+                    }`}>
+                      {hvResult.success ? (
+                        <>
+                          <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                          <span>VM found — current state: <strong>{hvResult.state}</strong></span>
+                        </>
+                      ) : (
+                        <>
+                          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                          <div>
+                            <p>{hvResult.error}</p>
+                            {hvResult.moduleMissing && (
+                              <button
+                                type="button"
+                                disabled={hvInstalling}
+                                onClick={async () => {
+                                  setHvInstalling(true); setHvInstallResult(null);
+                                  try {
+                                    const result = await window.rdpea.installHyperVModule();
+                                    setHvInstallResult(result);
+                                    if (result.success && !result.needsReboot) {
+                                      setHvResult(null); // clear error so user can re-test
+                                    }
+                                  } catch (err: any) {
+                                    setHvInstallResult({ success: false, error: err.message });
+                                  } finally {
+                                    setHvInstalling(false);
+                                  }
+                                }}
+                                className="mt-2 flex items-center gap-1.5 text-xs font-medium text-amber-300 hover:text-amber-200 disabled:opacity-50"
+                              >
+                                {hvInstalling ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                                {hvInstalling ? 'Installing…' : 'Install Hyper-V PowerShell Module'}
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Install result */}
+                  {hvInstallResult && (
+                    <div className={`p-3 rounded-lg text-sm flex items-start gap-2 ${
+                      hvInstallResult.success
+                        ? 'bg-green-950/40 border border-green-800/40 text-green-300'
+                        : 'bg-red-950/40 border border-red-800/40 text-red-300'
+                    }`}>
+                      {hvInstallResult.success ? (
+                        <>
+                          <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                          <span>
+                            {hvInstallResult.needsReboot
+                              ? 'Module installed — a reboot is required before it can be used.'
+                              : 'Module installed successfully. Click "Test Hyper-V Connection" to verify.'}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                          <div>
+                            <p>Failed to install module.</p>
+                            <p className="mt-1 text-xs text-red-400/80 font-mono break-all">{hvInstallResult.error}</p>
+                            <p className="mt-1 text-xs text-surface-400">Try running as administrator, or install manually via PowerShell.</p>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+
                   <div className="p-3 glass rounded-lg text-sm text-surface-400">
                     <p>On connect the VM will be started or resumed. On disconnect it will be saved.</p>
-                    <p className="mt-1 text-xs text-surface-500">Requires Hyper-V PowerShell module and appropriate permissions.</p>
                   </div>
                 </div>
               )}

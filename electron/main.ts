@@ -186,6 +186,59 @@ async function hyperVSave(host: string, vmName: string): Promise<void> {
   }
 }
 
+async function hyperVCheckModule(): Promise<boolean> {
+  try {
+    const result = await runPowerShell(`Get-Module -ListAvailable Hyper-V | Select-Object -First 1 -ExpandProperty Name`);
+    return result.toLowerCase().includes('hyper-v');
+  } catch {
+    return false;
+  }
+}
+
+async function hyperVTest(host: string, vmName: string): Promise<{ success: boolean; state?: string; error?: string; moduleMissing?: boolean }> {
+  // Step 1: Check if the Hyper-V module is available
+  const hasModule = await hyperVCheckModule();
+  if (!hasModule) {
+    return { success: false, error: 'Hyper-V PowerShell module is not installed.', moduleMissing: true };
+  }
+
+  // Step 2: Try to query the VM
+  const remote = host ? `-ComputerName ${host} ` : '';
+  try {
+    const state = await runPowerShell(`(Get-VM ${remote}-Name '${vmName}').State`);
+    return { success: true, state };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+async function hyperVInstallModule(): Promise<{ success: boolean; error?: string; needsReboot?: boolean }> {
+  try {
+    // Try Windows 10/11 desktop approach first
+    const result = await runPowerShell(
+      `$ErrorActionPreference='Stop'; ` +
+      `$feat = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Management-PowerShell; ` +
+      `if ($feat.State -eq 'Enabled') { Write-Output 'ALREADY_ENABLED' } ` +
+      `else { $r = Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Management-PowerShell -NoRestart -All; ` +
+      `if ($r.RestartNeeded) { Write-Output 'NEEDS_REBOOT' } else { Write-Output 'INSTALLED' } }`
+    );
+    if (result.includes('NEEDS_REBOOT')) {
+      return { success: true, needsReboot: true };
+    }
+    return { success: true };
+  } catch (desktopErr: any) {
+    // Fallback: try Windows Server approach
+    try {
+      await runPowerShell(
+        `$ErrorActionPreference='Stop'; Install-WindowsFeature -Name Hyper-V-PowerShell`
+      );
+      return { success: true };
+    } catch (serverErr: any) {
+      return { success: false, error: `Desktop: ${desktopErr.message}\nServer: ${serverErr.message}` };
+    }
+  }
+}
+
 function sendDebugLog(connectionId: string, message: string): void {
   if (!debugConnections.has(connectionId)) return;
   const sessionWin = sessionWindows.get(connectionId);
@@ -423,6 +476,14 @@ function registerIpcHandlers() {
   ipcMain.on('rdp:set-debug', (_event, connectionId: string, enabled: boolean) => {
     if (enabled) debugConnections.add(connectionId);
     else debugConnections.delete(connectionId);
+  });
+
+  // Hyper-V test & module install
+  ipcMain.handle('hyperv:test', (_event, host: string, vmName: string) => {
+    return hyperVTest(host, vmName);
+  });
+  ipcMain.handle('hyperv:install-module', async () => {
+    return hyperVInstallModule();
   });
 
   // Shell

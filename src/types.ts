@@ -76,6 +76,8 @@ declare global {
       sendKeyboard: (connectionId: string, type: 'keydown' | 'keyup', scanCode: number, extended: boolean) => void;
       sendMouse: (connectionId: string, type: string, x: number, y: number, button?: string, wheelDelta?: number) => void;
       setDebug: (connectionId: string, enabled: boolean) => void;
+      testHyperV: (host: string, vmName: string) => Promise<{ success: boolean; state?: string; error?: string; moduleMissing?: boolean }>;
+      installHyperVModule: () => Promise<{ success: boolean; error?: string; needsReboot?: boolean }>;
       openSessionWindow: (connectionId: string, connectionName: string) => void;
       onDebugLog: (callback: (connectionId: string, message: string) => void) => () => void;
       onFrame: (callback: (connectionId: string, rects: BitmapRectIPC[]) => void) => () => void;
