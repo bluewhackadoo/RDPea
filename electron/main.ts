@@ -17,6 +17,7 @@ const debugConnections = new Set<string>();
 const hyperVConnections = new Map<string, { host: string; vmName: string }>();
 let lastKnownClipboardText = '';
 let debugGlobal = false;
+let hyperVNeedsElevation = false;
 
 // ── Encrypted Storage ────────────────────────────────────────────────
 const STORE_PATH = path.join(app.getPath('userData'), 'connections.enc');
@@ -175,17 +176,17 @@ function runPowerShellElevated(cmd: string): Promise<string> {
     const outPath = path.join(tmpDir, `rdpea_hv_${id}_out.txt`);
     const errPath = path.join(tmpDir, `rdpea_hv_${id}_err.txt`);
 
-    // Write a script that runs the command and saves output/error to temp files
+    // PS single-quoted strings treat backslashes literally — no escaping needed
     const script = [
       'try {',
       `  $r = ${cmd}`,
-      `  if ($r -ne $null) { $r | Out-File -FilePath '${outPath.replace(/\\/g, '\\\\')}' -Encoding utf8 }`,
-      `  else { '' | Out-File -FilePath '${outPath.replace(/\\/g, '\\\\')}' -Encoding utf8 }`,
+      `  if ($r -ne $null) { $r | Out-File -FilePath '${outPath}' -Encoding ascii }`,
+      `  else { [IO.File]::WriteAllText('${outPath}', '') }`,
       '} catch {',
-      `  $_.Exception.Message | Out-File -FilePath '${errPath.replace(/\\/g, '\\\\')}' -Encoding utf8`,
+      `  $_.Exception.Message | Out-File -FilePath '${errPath}' -Encoding ascii`,
       '  exit 1',
       '}',
-    ].join('\n');
+    ].join('\r\n');
     fs.writeFileSync(scriptPath, script, 'utf8');
 
     // Clean stale output files
@@ -203,11 +204,11 @@ function runPowerShellElevated(cmd: string): Promise<string> {
       };
       try {
         if (fs.existsSync(errPath)) {
-          const errText = fs.readFileSync(errPath, 'utf8').trim();
+          const errText = fs.readFileSync(errPath, 'utf8').replace(/^\uFEFF/, '').trim();
           if (errText) { cleanup(); reject(new Error(errText)); return; }
         }
         if (fs.existsSync(outPath)) {
-          const output = fs.readFileSync(outPath, 'utf8').trim();
+          const output = fs.readFileSync(outPath, 'utf8').replace(/^\uFEFF/, '').trim();
           cleanup();
           resolve(output);
         } else if (err) {
@@ -225,8 +226,12 @@ function runPowerShellElevated(cmd: string): Promise<string> {
   });
 }
 
-// Try non-elevated first; auto-escalate via UAC on permission errors
+// Try non-elevated first; auto-escalate via UAC on permission errors.
+// Caches the elevation requirement so subsequent calls skip straight to elevated.
 async function runHyperVPowerShell(cmd: string): Promise<string> {
+  if (hyperVNeedsElevation) {
+    return await runPowerShellElevated(cmd);
+  }
   try {
     return await runPowerShell(cmd);
   } catch (err: any) {
@@ -235,7 +240,22 @@ async function runHyperVPowerShell(cmd: string): Promise<string> {
         msg.includes('Access is denied') ||
         msg.includes('authorization policy') ||
         msg.includes('UnauthorizedAccessException')) {
-      console.log('[HyperV] Permission denied, retrying with elevation...');
+      // Warn the user before the first UAC prompt
+      const parentWin = BrowserWindow.getFocusedWindow() || mainWindow;
+      const { response } = await dialog.showMessageBox(parentWin!, {
+        type: 'warning',
+        title: 'Administrator Privileges Required',
+        message: 'Hyper-V management requires administrator privileges.',
+        detail: 'Windows will ask you to approve a User Account Control (UAC) prompt to continue. This will be remembered for the rest of this session.',
+        buttons: ['Continue', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1,
+      });
+      if (response === 1) {
+        throw new Error('Elevation cancelled by user');
+      }
+      hyperVNeedsElevation = true;
+      console.log('[HyperV] Permission denied, retrying with elevation (cached for session)...');
       return await runPowerShellElevated(cmd);
     }
     throw err;
