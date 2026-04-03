@@ -69,6 +69,9 @@ contextBridge.exposeInMainWorld('rdpea', {
   // Shell
   openExternal: (url: string) => ipcRenderer.send('shell:open-external', url),
 
+  // Auto-update
+  checkForUpdates: () => ipcRenderer.send('update:check'),
+
   // Auto-update events
   onUpdateChecking: (callback: () => void) => {
     const handler = () => callback();

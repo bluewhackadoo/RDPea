@@ -497,6 +497,13 @@ function registerIpcHandlers() {
     return hyperVInstallModule();
   });
 
+  // Check for updates (manual trigger)
+  ipcMain.on('update:check', () => {
+    if (!isDev) {
+      autoUpdater.checkForUpdates().catch(() => {});
+    }
+  });
+
   // Shell
   ipcMain.on('shell:open-external', (_event, url: string) => {
     shell.openExternal(url);

@@ -86,6 +86,7 @@ declare global {
       onDisconnected: (callback: (connectionId: string) => void) => () => void;
       onError: (callback: (connectionId: string, message: string) => void) => () => void;
       openExternal: (url: string) => void;
+      checkForUpdates: () => void;
       onUpdateChecking: (callback: () => void) => () => void;
       onUpdateAvailable: (callback: (version: string) => void) => () => void;
       onUpdateNotAvailable: (callback: () => void) => () => void;
