@@ -78,6 +78,7 @@ declare global {
       setDebug: (connectionId: string, enabled: boolean) => void;
       setDebugGlobal: (enabled: boolean) => void;
       onDebugGlobal: (callback: (enabled: boolean) => void) => () => void;
+      getDebugGlobal: () => Promise<boolean>;
       getAppVersion: () => Promise<string>;
       testHyperV: (host: string, vmName: string) => Promise<{ success: boolean; state?: string; error?: string; moduleMissing?: boolean }>;
       installHyperVModule: () => Promise<{ success: boolean; error?: string; needsReboot?: boolean }>;

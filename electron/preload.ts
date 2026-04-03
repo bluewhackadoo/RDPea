@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('rdpea', {
     ipcRenderer.on('rdp:debug-global', handler);
     return () => ipcRenderer.removeListener('rdp:debug-global', handler);
   },
+  getDebugGlobal: () => ipcRenderer.invoke('rdp:get-debug-global'),
 
   // App info
   getAppVersion: () => ipcRenderer.invoke('app:version'),

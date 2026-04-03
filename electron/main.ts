@@ -142,6 +142,13 @@ function createSessionWindow(connectionId: string, connectionName: string, rdpWi
 
   sessionWindows.set(connectionId, sessionWin);
 
+  // Push current debug-global state once the renderer is ready
+  sessionWin.webContents.on('did-finish-load', () => {
+    if (debugGlobal && !sessionWin.isDestroyed()) {
+      sessionWin.webContents.send('rdp:debug-global', true);
+    }
+  });
+
   sessionWin.on('closed', () => {
     sessionWindows.delete(connectionId);
     terminateRdpClient(connectionId);
@@ -162,25 +169,20 @@ function runPowerShell(cmd: string): Promise<string> {
 
 async function hyperVStartOrResume(host: string, vmName: string): Promise<void> {
   const remote = host ? `-ComputerName ${host} ` : '';
-  try {
-    const state = (await runPowerShell(`(Get-VM ${remote}-Name '${vmName}').State`)).trim();
-    const stateLower = state.toLowerCase();
-    console.log(`[HyperV] VM "${vmName}" state: "${state}"`);
-    if (stateLower === 'off' || stateLower === 'stopped') {
-      await runPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
-      console.log(`[HyperV] Started VM "${vmName}"`);
-    } else if (stateLower === 'paused' || stateLower === 'saved') {
-      await runPowerShell(`Resume-VM ${remote}-Name '${vmName}'`);
-      console.log(`[HyperV] Resumed VM "${vmName}"`);
-    } else if (stateLower !== 'running') {
-      // Unknown state — try Start-VM as a best-effort
-      console.log(`[HyperV] VM "${vmName}" in unexpected state "${state}", attempting Start-VM`);
-      await runPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
-    } else {
-      console.log(`[HyperV] VM "${vmName}" already running`);
-    }
-  } catch (err: any) {
-    console.error(`[HyperV] Failed to start/resume "${vmName}":`, err.message);
+  const state = (await runPowerShell(`(Get-VM ${remote}-Name '${vmName}').State`)).trim();
+  const stateLower = state.toLowerCase();
+  console.log(`[HyperV] VM "${vmName}" state: "${state}"`);
+  if (stateLower === 'off' || stateLower === 'stopped') {
+    await runPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
+    console.log(`[HyperV] Started VM "${vmName}"`);
+  } else if (stateLower === 'paused' || stateLower === 'saved') {
+    await runPowerShell(`Resume-VM ${remote}-Name '${vmName}'`);
+    console.log(`[HyperV] Resumed VM "${vmName}"`);
+  } else if (stateLower !== 'running') {
+    console.log(`[HyperV] VM "${vmName}" in unexpected state "${state}", attempting Start-VM`);
+    await runPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
+  } else {
+    console.log(`[HyperV] VM "${vmName}" already running`);
   }
 }
 
@@ -517,6 +519,9 @@ function registerIpcHandlers() {
 
   // App version
   ipcMain.handle('app:version', () => app.getVersion());
+
+  // Query current global debug state (for session windows that mount after toggle)
+  ipcMain.handle('rdp:get-debug-global', () => debugGlobal);
 
   // Hyper-V test & module install
   ipcMain.handle('hyperv:test', (_event, host: string, vmName: string) => {

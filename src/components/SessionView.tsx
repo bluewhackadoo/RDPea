@@ -254,6 +254,15 @@ export function SessionView() {
     // Check initial status
     window.rdpea.getStatus(connectionId).then(setIsConnected);
 
+    // Check if global debug was already enabled before this window opened
+    window.rdpea.getDebugGlobal().then((enabled) => {
+      if (enabled) {
+        setDebugMode(true);
+        setDebugOpen(true);
+        if (connectionId) window.rdpea?.setDebug(connectionId, true);
+      }
+    });
+
     return () => {
       unsubFrame(); unsubAudio(); unsubConnected(); unsubDisconnected(); unsubError(); unsubDebug(); unsubDebugGlobal();
       if (rafIdRef.current) { cancelAnimationFrame(rafIdRef.current); rafIdRef.current = 0; }

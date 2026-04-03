@@ -478,8 +478,10 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
                                     const result = await window.rdpea.startHyperV(form.hyperVHost || '', form.hyperVVmName);
                                     if (result.success) {
                                       setHvResult({ ...hvResult, state: result.state });
+                                    } else {
+                                      setHvResult({ success: false, error: result.error || 'Failed to start/resume VM' });
                                     }
-                                  } catch { /* ignore */ } finally {
+                                  } catch (err: any) { setHvResult({ success: false, error: err.message }); } finally {
                                     setHvStarting(false);
                                   }
                                 }}
