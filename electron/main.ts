@@ -248,7 +248,7 @@ function sendDebugLog(connectionId: string, message: string): void {
 }
 
 // ── Native RDP Client Management ─────────────────────────────────────
-function launchRdpConnection(conn: any): { success: boolean; error?: string } {
+async function launchRdpConnection(conn: any): Promise<{ success: boolean; error?: string }> {
   try {
     if (rdpClients.has(conn.id)) {
       const existing = rdpClients.get(conn.id)!;
@@ -257,6 +257,9 @@ function launchRdpConnection(conn: any): { success: boolean; error?: string } {
       }
       // Stale/dead client — clean up before reconnecting
       terminateRdpClient(conn.id);
+      // Wait for TCP socket to fully close before opening a new connection,
+      // otherwise the server sees two sessions and sends error 0x5
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     // If no domain/workgroup specified, use the server hostname as fallback
@@ -353,6 +356,10 @@ function launchRdpConnection(conn: any): { success: boolean; error?: string } {
     });
 
     client.on('close', () => {
+      // Only clean up if we're still the active client for this connection.
+      // After reconnect, the old client's async close event must not stomp the new client.
+      if (rdpClients.get(conn.id) !== client) return;
+
       rdpClients.delete(conn.id);
       // Stop clipboard polling for this connection
       const poller = clipboardPollers.get(conn.id);
@@ -372,6 +379,9 @@ function launchRdpConnection(conn: any): { success: boolean; error?: string } {
     });
 
     client.on('error', (err: Error) => {
+      // Ignore errors from stale clients that have been replaced by a reconnect
+      if (rdpClients.get(conn.id) !== client) return;
+
       console.error(`RDP error for ${conn.id}:`, err.message);
       const sessionWin = sessionWindows.get(conn.id);
       if (sessionWin && !sessionWin.isDestroyed()) {
@@ -395,6 +405,7 @@ function launchRdpConnection(conn: any): { success: boolean; error?: string } {
 function terminateRdpClient(connectionId: string) {
   const client = rdpClients.get(connectionId);
   if (client) {
+    client.removeAllListeners(); // prevent stale events from firing after reconnect
     client.disconnect();
     rdpClients.delete(connectionId);
   }
