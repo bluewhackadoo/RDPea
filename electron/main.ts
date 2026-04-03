@@ -169,7 +169,7 @@ function runPowerShell(cmd: string): Promise<string> {
 
 async function hyperVStartOrResume(host: string, vmName: string): Promise<void> {
   const remote = host ? `-ComputerName ${host} ` : '';
-  const state = (await runPowerShell(`(Get-VM ${remote}-Name '${vmName}').State`)).trim();
+  const state = (await runPowerShell(`Get-VM ${remote}-Name '${vmName}' | ForEach-Object { $_.State.ToString() }`)).trim();
   const stateLower = state.toLowerCase();
   console.log(`[HyperV] VM "${vmName}" state: "${state}"`);
   if (stateLower === 'off' || stateLower === 'stopped') {
@@ -205,18 +205,21 @@ async function hyperVCheckModule(): Promise<boolean> {
   }
 }
 
-async function hyperVTest(host: string, vmName: string): Promise<{ success: boolean; state?: string; error?: string; moduleMissing?: boolean }> {
+async function hyperVTest(host: string, vmName: string): Promise<{ success: boolean; state?: string; error?: string; moduleMissing?: boolean; rawOutput?: string }> {
   // Step 1: Check if the Hyper-V module is available
   const hasModule = await hyperVCheckModule();
   if (!hasModule) {
     return { success: false, error: 'Hyper-V PowerShell module is not installed.', moduleMissing: true };
   }
 
-  // Step 2: Try to query the VM
+  // Step 2: Try to query the VM — use pipeline to force string output of State enum
   const remote = host ? `-ComputerName ${host} ` : '';
   try {
-    const state = (await runPowerShell(`(Get-VM ${remote}-Name '${vmName}').State`)).trim();
-    return { success: true, state };
+    const raw = await runPowerShell(
+      `Get-VM ${remote}-Name '${vmName}' | ForEach-Object { $_.State.ToString() }`
+    );
+    const state = raw.trim();
+    return { success: true, state: state || undefined, rawOutput: raw };
   } catch (err: any) {
     return { success: false, error: err.message };
   }
@@ -535,7 +538,7 @@ function registerIpcHandlers() {
       await hyperVStartOrResume(host, vmName);
       // Re-query state after start/resume
       const remote = host ? `-ComputerName ${host} ` : '';
-      const state = (await runPowerShell(`(Get-VM ${remote}-Name '${vmName}').State`)).trim();
+      const state = (await runPowerShell(`Get-VM ${remote}-Name '${vmName}' | ForEach-Object { $_.State.ToString() }`)).trim();
       return { success: true, state };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -561,6 +564,11 @@ function setupAutoUpdater() {
 
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+
+  // Beta builds should find other beta (pre-release) updates
+  if (app.getVersion().includes('beta')) {
+    autoUpdater.allowPrerelease = true;
+  }
 
   autoUpdater.on('checking-for-update', () => {
     console.log('Checking for updates...');

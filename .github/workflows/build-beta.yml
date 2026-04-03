@@ -1,0 +1,53 @@
+name: Beta Build
+
+on:
+  push:
+    branches:
+      - beta
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-beta:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Stamp beta version
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json | ConvertFrom-Json
+          $base = $pkg.version -replace '-.*$', ''   # strip any existing pre-release suffix
+          $beta = "$base-beta.${{ github.run_number }}"
+          Write-Host "Beta version: $beta"
+          $pkg.version = $beta
+          $pkg | ConvertTo-Json -Depth 20 | Set-Content package.json
+          echo "BETA_VERSION=$beta" >> $env:GITHUB_ENV
+
+      - name: Generate icons
+        run: npm run generate-icons
+
+      - name: Build & publish
+        run: npx vite build && npx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-beta
+          path: |
+            release/*.exe
+            release/*.yml

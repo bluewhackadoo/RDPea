@@ -115,8 +115,7 @@
     "publish": {
       "provider": "github",
       "owner": "bluewhackadoo",
-      "repo": "RDPea",
-      "releaseType": "release"
+      "repo": "RDPea"
     }
   }
 }

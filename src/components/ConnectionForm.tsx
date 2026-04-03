@@ -31,7 +31,7 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
   const [newGroup, setNewGroup] = useState('');
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [hvTesting, setHvTesting] = useState(false);
-  const [hvResult, setHvResult] = useState<{ success: boolean; state?: string; error?: string; moduleMissing?: boolean } | null>(null);
+  const [hvResult, setHvResult] = useState<{ success: boolean; state?: string; error?: string; moduleMissing?: boolean; rawOutput?: string } | null>(null);
   const [hvInstalling, setHvInstalling] = useState(false);
   const [hvInstallResult, setHvInstallResult] = useState<{ success: boolean; error?: string; needsReboot?: boolean } | null>(null);
   const [hvStarting, setHvStarting] = useState(false);
@@ -468,7 +468,10 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
                           <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
                           <div>
                             <span>VM found — current state: <strong>{hvResult.state || '(unknown)'}</strong></span>
-                            {hvResult.state && hvResult.state !== 'Running' && (
+                            {hvResult.rawOutput !== undefined && !hvResult.state && (
+                              <p className="text-[10px] font-mono text-surface-500 mt-1">Raw PS output: "{hvResult.rawOutput}"</p>
+                            )}
+                            {(!hvResult.state || hvResult.state !== 'Running') && (
                               <button
                                 type="button"
                                 disabled={hvStarting}
