@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('rdpea', {
   // Hyper-V management
   testHyperV: (host: string, vmName: string) => ipcRenderer.invoke('hyperv:test', host, vmName),
   installHyperVModule: () => ipcRenderer.invoke('hyperv:install-module'),
+  startHyperV: (host: string, vmName: string) => ipcRenderer.invoke('hyperv:start', host, vmName),
 
   // Session windows
   openSessionWindow: (connectionId: string, connectionName: string) =>

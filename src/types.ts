@@ -78,6 +78,7 @@ declare global {
       setDebug: (connectionId: string, enabled: boolean) => void;
       testHyperV: (host: string, vmName: string) => Promise<{ success: boolean; state?: string; error?: string; moduleMissing?: boolean }>;
       installHyperVModule: () => Promise<{ success: boolean; error?: string; needsReboot?: boolean }>;
+      startHyperV: (host: string, vmName: string) => Promise<{ success: boolean; state?: string; error?: string }>;
       openSessionWindow: (connectionId: string, connectionName: string) => void;
       onDebugLog: (callback: (connectionId: string, message: string) => void) => () => void;
       onFrame: (callback: (connectionId: string, rects: BitmapRectIPC[]) => void) => () => void;

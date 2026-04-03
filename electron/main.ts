@@ -160,7 +160,7 @@ function runPowerShell(cmd: string): Promise<string> {
 async function hyperVStartOrResume(host: string, vmName: string): Promise<void> {
   const remote = host ? `-ComputerName ${host} ` : '';
   try {
-    const state = await runPowerShell(`(Get-VM ${remote}-Name '${vmName}').State`);
+    const state = (await runPowerShell(`(Get-VM ${remote}-Name '${vmName}').State`)).trim();
     console.log(`[HyperV] VM "${vmName}" state: ${state}`);
     if (state === 'Off' || state === 'Stopped') {
       await runPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
@@ -205,7 +205,7 @@ async function hyperVTest(host: string, vmName: string): Promise<{ success: bool
   // Step 2: Try to query the VM
   const remote = host ? `-ComputerName ${host} ` : '';
   try {
-    const state = await runPowerShell(`(Get-VM ${remote}-Name '${vmName}').State`);
+    const state = (await runPowerShell(`(Get-VM ${remote}-Name '${vmName}').State`)).trim();
     return { success: true, state };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -495,6 +495,17 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('hyperv:install-module', async () => {
     return hyperVInstallModule();
+  });
+  ipcMain.handle('hyperv:start', async (_event, host: string, vmName: string) => {
+    try {
+      await hyperVStartOrResume(host, vmName);
+      // Re-query state after start/resume
+      const remote = host ? `-ComputerName ${host} ` : '';
+      const state = (await runPowerShell(`(Get-VM ${remote}-Name '${vmName}').State`)).trim();
+      return { success: true, state };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
   });
 
   // Check for updates (manual trigger)

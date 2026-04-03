@@ -2,7 +2,7 @@ import { useState } from 'react';
 import {
   X, Save, Monitor, Globe, User, Lock, Shield, Volume2,
   Clipboard, HardDrive, Printer, Tag, FileText, Palette,
-  Keyboard, Server, Loader2, CheckCircle2, AlertTriangle, Download,
+  Keyboard, Server, Loader2, CheckCircle2, AlertTriangle, Download, Play,
 } from 'lucide-react';
 import { RdpConnection } from '../types';
 import { createDefaultConnection } from '../hooks/useConnections';
@@ -34,6 +34,7 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
   const [hvResult, setHvResult] = useState<{ success: boolean; state?: string; error?: string; moduleMissing?: boolean } | null>(null);
   const [hvInstalling, setHvInstalling] = useState(false);
   const [hvInstallResult, setHvInstallResult] = useState<{ success: boolean; error?: string; needsReboot?: boolean } | null>(null);
+  const [hvStarting, setHvStarting] = useState(false);
 
   const update = <K extends keyof RdpConnection>(key: K, value: RdpConnection[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -459,7 +460,30 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
                       {hvResult.success ? (
                         <>
                           <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-                          <span>VM found — current state: <strong>{hvResult.state}</strong></span>
+                          <div>
+                            <span>VM found — current state: <strong>{hvResult.state || '(unknown)'}</strong></span>
+                            {hvResult.state && hvResult.state !== 'Running' && (
+                              <button
+                                type="button"
+                                disabled={hvStarting}
+                                onClick={async () => {
+                                  setHvStarting(true);
+                                  try {
+                                    const result = await window.rdpea.startHyperV(form.hyperVHost || '', form.hyperVVmName);
+                                    if (result.success) {
+                                      setHvResult({ ...hvResult, state: result.state });
+                                    }
+                                  } catch { /* ignore */ } finally {
+                                    setHvStarting(false);
+                                  }
+                                }}
+                                className="mt-2 flex items-center gap-1.5 text-xs font-medium text-green-300 hover:text-green-200 disabled:opacity-50"
+                              >
+                                {hvStarting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                                {hvStarting ? 'Starting…' : 'Start / Resume VM'}
+                              </button>
+                            )}
+                          </div>
                         </>
                       ) : (
                         <>
