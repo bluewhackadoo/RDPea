@@ -168,7 +168,9 @@ function runPowerShell(cmd: string): Promise<string> {
   });
 }
 
-function runPowerShellElevated(cmd: string): Promise<string> {
+// Run a PS script file elevated via UAC. The script body is written to a .ps1 file,
+// output is captured via [IO.File]::WriteAllText to avoid encoding issues.
+function runPowerShellElevated(scriptBody: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const tmpDir = app.getPath('temp');
     const id = Date.now();
@@ -176,24 +178,23 @@ function runPowerShellElevated(cmd: string): Promise<string> {
     const outPath = path.join(tmpDir, `rdpea_hv_${id}_out.txt`);
     const errPath = path.join(tmpDir, `rdpea_hv_${id}_err.txt`);
 
-    // PS single-quoted strings treat backslashes literally — no escaping needed
-    const script = [
+    // Wrap user script: capture output via .NET IO for reliability
+    const wrapper = [
+      '$ErrorActionPreference = "Stop"',
       'try {',
-      `  $r = ${cmd}`,
-      `  if ($r -ne $null) { $r | Out-File -FilePath '${outPath}' -Encoding ascii }`,
-      `  else { [IO.File]::WriteAllText('${outPath}', '') }`,
+      scriptBody,
+      `  [IO.File]::WriteAllText('${outPath}', $__out)`,
       '} catch {',
-      `  $_.Exception.Message | Out-File -FilePath '${errPath}' -Encoding ascii`,
+      `  [IO.File]::WriteAllText('${errPath}', $_.Exception.Message)`,
       '  exit 1',
       '}',
     ].join('\r\n');
-    fs.writeFileSync(scriptPath, script, 'utf8');
+    fs.writeFileSync(scriptPath, wrapper, 'utf8');
 
     // Clean stale output files
     try { fs.unlinkSync(outPath); } catch {}
     try { fs.unlinkSync(errPath); } catch {}
 
-    // Launch elevated PowerShell to run the script
     const args = `'-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptPath.replace(/'/g, "''")}'`;
     const launcher = `Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList ${args}`;
     exec(`powershell.exe -NoProfile -Command "${launcher.replace(/"/g, '\\"')}"`, (err) => {
@@ -226,65 +227,111 @@ function runPowerShellElevated(cmd: string): Promise<string> {
   });
 }
 
-// Try non-elevated first; auto-escalate via UAC on permission errors.
-// Caches the elevation requirement so subsequent calls skip straight to elevated.
-async function runHyperVPowerShell(cmd: string): Promise<string> {
-  if (hyperVNeedsElevation) {
-    return await runPowerShellElevated(cmd);
-  }
-  try {
-    return await runPowerShell(cmd);
-  } catch (err: any) {
-    const msg = err.message || '';
-    if (msg.includes('do not have the required permission') ||
-        msg.includes('Access is denied') ||
-        msg.includes('authorization policy') ||
-        msg.includes('UnauthorizedAccessException')) {
-      // Warn the user before the first UAC prompt
-      const parentWin = BrowserWindow.getFocusedWindow() || mainWindow;
-      const { response } = await dialog.showMessageBox(parentWin!, {
-        type: 'warning',
-        title: 'Administrator Privileges Required',
-        message: 'Hyper-V management requires administrator privileges.',
-        detail: 'Windows will ask you to approve a User Account Control (UAC) prompt to continue. This will be remembered for the rest of this session.',
-        buttons: ['Continue', 'Cancel'],
-        defaultId: 0,
-        cancelId: 1,
-      });
-      if (response === 1) {
-        throw new Error('Elevation cancelled by user');
-      }
-      hyperVNeedsElevation = true;
-      console.log('[HyperV] Permission denied, retrying with elevation (cached for session)...');
-      return await runPowerShellElevated(cmd);
-    }
-    throw err;
-  }
+// Prompt user for elevation on first permission error, then cache for session.
+async function ensureElevation(): Promise<void> {
+  if (hyperVNeedsElevation) return;
+  const parentWin = BrowserWindow.getFocusedWindow() || mainWindow;
+  const { response } = await dialog.showMessageBox(parentWin!, {
+    type: 'warning',
+    title: 'Administrator Privileges Required',
+    message: 'Hyper-V management requires administrator privileges.',
+    detail: 'Windows will show a User Account Control (UAC) prompt. This will be remembered for the rest of this session.',
+    buttons: ['Continue', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (response === 1) throw new Error('Elevation cancelled by user');
+  hyperVNeedsElevation = true;
 }
 
-async function hyperVStartOrResume(host: string, vmName: string): Promise<void> {
-  const remote = host ? `-ComputerName ${host} ` : '';
-  const state = (await runHyperVPowerShell(`Get-VM ${remote}-Name '${vmName}' | ForEach-Object { $_.State.ToString() }`)).trim();
-  const stateLower = state.toLowerCase();
-  console.log(`[HyperV] VM "${vmName}" state: "${state}"`);
-  if (stateLower === 'off' || stateLower === 'stopped') {
-    await runHyperVPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
-    console.log(`[HyperV] Started VM "${vmName}"`);
-  } else if (stateLower === 'paused' || stateLower === 'saved') {
-    await runHyperVPowerShell(`Resume-VM ${remote}-Name '${vmName}'`);
-    console.log(`[HyperV] Resumed VM "${vmName}"`);
-  } else if (stateLower !== 'running') {
-    console.log(`[HyperV] VM "${vmName}" in unexpected state "${state}", attempting Start-VM`);
-    await runHyperVPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
-  } else {
-    console.log(`[HyperV] VM "${vmName}" already running`);
+// Run a simple PS command, trying non-elevated first.
+// If permission denied, prompts for elevation and retries.
+// Returns the trimmed stdout.
+async function runHyperVCmd(cmd: string): Promise<string> {
+  if (!hyperVNeedsElevation) {
+    try {
+      return await runPowerShell(cmd);
+    } catch (err: any) {
+      const msg = err.message || '';
+      if (msg.includes('do not have the required permission') ||
+          msg.includes('Access is denied') ||
+          msg.includes('authorization policy') ||
+          msg.includes('UnauthorizedAccessException')) {
+        console.log('[HyperV] Permission denied, will request elevation...');
+        await ensureElevation();
+      } else {
+        throw err;
+      }
+    }
   }
+  // Elevated path: wrap single command into a script
+  return await runPowerShellElevated(`  $__out = (${cmd}) | Out-String`);
+}
+
+// Run a multi-line PS script elevated. The script must set $__out to the desired output string.
+async function runHyperVScript(scriptBody: string): Promise<string> {
+  if (!hyperVNeedsElevation) {
+    // Probe with a simple command to see if we need elevation
+    try {
+      await runPowerShell('Get-VM | Out-Null');
+    } catch (err: any) {
+      const msg = err.message || '';
+      if (msg.includes('do not have the required permission') ||
+          msg.includes('Access is denied') ||
+          msg.includes('authorization policy') ||
+          msg.includes('UnauthorizedAccessException')) {
+        await ensureElevation();
+      } else {
+        throw err;
+      }
+    }
+  }
+  // If we still don't need elevation after the probe, try non-elevated
+  if (!hyperVNeedsElevation) {
+    // Non-elevated: run the script body in a normal powershell
+    // We can't easily do multi-line non-elevated, so just run elevated
+    // This path means Get-VM succeeded without elevation (rare but possible)
+    return await runPowerShellElevated(scriptBody);
+  }
+  return await runPowerShellElevated(scriptBody);
+}
+
+// Single elevated script: query state → start/resume if needed → return final state
+async function hyperVStartOrResume(host: string, vmName: string): Promise<string> {
+  const remote = host ? `-ComputerName ${host} ` : '';
+  const script = [
+    `$vm = Get-VM ${remote}-Name '${vmName}'`,
+    `$state = $vm.State.ToString()`,
+    `$action = 'none'`,
+    `if ($state -eq 'Off' -or $state -eq 'Stopped') {`,
+    `  Start-VM ${remote}-Name '${vmName}'`,
+    `  $action = 'started'`,
+    `} elseif ($state -eq 'Paused' -or $state -eq 'Saved') {`,
+    `  Resume-VM ${remote}-Name '${vmName}'`,
+    `  $action = 'resumed'`,
+    `} elseif ($state -ne 'Running') {`,
+    `  Start-VM ${remote}-Name '${vmName}'`,
+    `  $action = 'started (fallback)'`,
+    `}`,
+    `Start-Sleep -Milliseconds 1500`,
+    `$final = (Get-VM ${remote}-Name '${vmName}').State.ToString()`,
+    `$__out = "$action|$state|$final"`,
+  ].join('\r\n');
+
+  const result = await runHyperVScript(script);
+  const [action, initialState, finalState] = result.split('|');
+  console.log(`[HyperV] VM "${vmName}" was ${initialState}, action=${action}, now ${finalState}`);
+  return finalState || '';
 }
 
 async function hyperVSave(host: string, vmName: string): Promise<void> {
   const remote = host ? `-ComputerName ${host} ` : '';
   try {
-    await runHyperVPowerShell(`Save-VM ${remote}-Name '${vmName}'`);
+    const script = [
+      `Save-VM ${remote}-Name '${vmName}'`,
+      `$__out = 'saved'`,
+    ].join('\r\n');
+    await runHyperVScript(script);
     console.log(`[HyperV] Saved VM "${vmName}"`);
   } catch (err: any) {
     console.error(`[HyperV] Failed to save "${vmName}":`, err.message);
@@ -293,28 +340,39 @@ async function hyperVSave(host: string, vmName: string): Promise<void> {
 
 async function hyperVCheckModule(): Promise<boolean> {
   try {
-    const result = await runPowerShell(`Get-Module -ListAvailable Hyper-V | Select-Object -First 1 -ExpandProperty Name`);
+    const result = await runPowerShell('Get-Module -ListAvailable Hyper-V | Select-Object -First 1 -ExpandProperty Name');
     return result.toLowerCase().includes('hyper-v');
   } catch {
     return false;
   }
 }
 
+// Single script: check module → query VM → return state + diagnostics
 async function hyperVTest(host: string, vmName: string): Promise<{ success: boolean; state?: string; error?: string; moduleMissing?: boolean; rawOutput?: string }> {
-  // Step 1: Check if the Hyper-V module is available
   const hasModule = await hyperVCheckModule();
   if (!hasModule) {
     return { success: false, error: 'Hyper-V PowerShell module is not installed.', moduleMissing: true };
   }
 
-  // Step 2: Try to query the VM — use pipeline to force string output of State enum
   const remote = host ? `-ComputerName ${host} ` : '';
   try {
-    const raw = await runHyperVPowerShell(
-      `Get-VM ${remote}-Name '${vmName}' | ForEach-Object { $_.State.ToString() }`
-    );
-    const state = raw.trim();
-    return { success: true, state: state || undefined, rawOutput: raw };
+    const script = [
+      `$vm = Get-VM ${remote}-Name '${vmName}'`,
+      `$state = $vm.State.ToString()`,
+      `$name = $vm.Name`,
+      `$status = $vm.Status`,
+      `$__out = "STATE=$state|NAME=$name|STATUS=$status"`,
+    ].join('\r\n');
+
+    const raw = await runHyperVScript(script);
+    // Parse structured output
+    const parts: Record<string, string> = {};
+    for (const pair of raw.split('|')) {
+      const [k, ...v] = pair.split('=');
+      if (k) parts[k.trim()] = v.join('=').trim();
+    }
+    const state = parts['STATE'] || undefined;
+    return { success: true, state, rawOutput: raw };
   } catch (err: any) {
     return { success: false, error: err.message };
   }
@@ -322,23 +380,20 @@ async function hyperVTest(host: string, vmName: string): Promise<{ success: bool
 
 async function hyperVInstallModule(): Promise<{ success: boolean; error?: string; needsReboot?: boolean }> {
   try {
-    // Try Windows 10/11 desktop approach first
-    const result = await runPowerShell(
-      `$ErrorActionPreference='Stop'; ` +
-      `$feat = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Management-PowerShell; ` +
-      `if ($feat.State -eq 'Enabled') { Write-Output 'ALREADY_ENABLED' } ` +
-      `else { $r = Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Management-PowerShell -NoRestart -All; ` +
-      `if ($r.RestartNeeded) { Write-Output 'NEEDS_REBOOT' } else { Write-Output 'INSTALLED' } }`
+    const result = await runPowerShellElevated(
+      `$feat = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Management-PowerShell\r\n` +
+      `if ($feat.State -eq 'Enabled') { $__out = 'ALREADY_ENABLED' }\r\n` +
+      `else {\r\n` +
+      `  $r = Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Management-PowerShell -NoRestart -All\r\n` +
+      `  if ($r.RestartNeeded) { $__out = 'NEEDS_REBOOT' } else { $__out = 'INSTALLED' }\r\n` +
+      `}`
     );
-    if (result.includes('NEEDS_REBOOT')) {
-      return { success: true, needsReboot: true };
-    }
+    if (result.includes('NEEDS_REBOOT')) return { success: true, needsReboot: true };
     return { success: true };
   } catch (desktopErr: any) {
-    // Fallback: try Windows Server approach
     try {
-      await runPowerShell(
-        `$ErrorActionPreference='Stop'; Install-WindowsFeature -Name Hyper-V-PowerShell`
+      await runPowerShellElevated(
+        `Install-WindowsFeature -Name Hyper-V-PowerShell\r\n$__out = 'INSTALLED'`
       );
       return { success: true };
     } catch (serverErr: any) {
@@ -630,10 +685,7 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('hyperv:start', async (_event, host: string, vmName: string) => {
     try {
-      await hyperVStartOrResume(host, vmName);
-      // Re-query state after start/resume
-      const remote = host ? `-ComputerName ${host} ` : '';
-      const state = (await runHyperVPowerShell(`Get-VM ${remote}-Name '${vmName}' | ForEach-Object { $_.State.ToString() }`)).trim();
+      const state = await hyperVStartOrResume(host, vmName);
       return { success: true, state };
     } catch (err: any) {
       return { success: false, error: err.message };
