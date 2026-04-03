@@ -167,20 +167,95 @@ function runPowerShell(cmd: string): Promise<string> {
   });
 }
 
+function runPowerShellElevated(cmd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const tmpDir = app.getPath('temp');
+    const id = Date.now();
+    const scriptPath = path.join(tmpDir, `rdpea_hv_${id}.ps1`);
+    const outPath = path.join(tmpDir, `rdpea_hv_${id}_out.txt`);
+    const errPath = path.join(tmpDir, `rdpea_hv_${id}_err.txt`);
+
+    // Write a script that runs the command and saves output/error to temp files
+    const script = [
+      'try {',
+      `  $r = ${cmd}`,
+      `  if ($r -ne $null) { $r | Out-File -FilePath '${outPath.replace(/\\/g, '\\\\')}' -Encoding utf8 }`,
+      `  else { '' | Out-File -FilePath '${outPath.replace(/\\/g, '\\\\')}' -Encoding utf8 }`,
+      '} catch {',
+      `  $_.Exception.Message | Out-File -FilePath '${errPath.replace(/\\/g, '\\\\')}' -Encoding utf8`,
+      '  exit 1',
+      '}',
+    ].join('\n');
+    fs.writeFileSync(scriptPath, script, 'utf8');
+
+    // Clean stale output files
+    try { fs.unlinkSync(outPath); } catch {}
+    try { fs.unlinkSync(errPath); } catch {}
+
+    // Launch elevated PowerShell to run the script
+    const args = `'-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptPath.replace(/'/g, "''")}'`;
+    const launcher = `Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList ${args}`;
+    exec(`powershell.exe -NoProfile -Command "${launcher.replace(/"/g, '\\"')}"`, (err) => {
+      const cleanup = () => {
+        try { fs.unlinkSync(scriptPath); } catch {}
+        try { fs.unlinkSync(outPath); } catch {}
+        try { fs.unlinkSync(errPath); } catch {}
+      };
+      try {
+        if (fs.existsSync(errPath)) {
+          const errText = fs.readFileSync(errPath, 'utf8').trim();
+          if (errText) { cleanup(); reject(new Error(errText)); return; }
+        }
+        if (fs.existsSync(outPath)) {
+          const output = fs.readFileSync(outPath, 'utf8').trim();
+          cleanup();
+          resolve(output);
+        } else if (err) {
+          cleanup();
+          reject(new Error(`Elevated command failed: ${err.message}`));
+        } else {
+          cleanup();
+          resolve('');
+        }
+      } catch (readErr: any) {
+        cleanup();
+        reject(new Error(`Failed to read output: ${readErr.message}`));
+      }
+    });
+  });
+}
+
+// Try non-elevated first; auto-escalate via UAC on permission errors
+async function runHyperVPowerShell(cmd: string): Promise<string> {
+  try {
+    return await runPowerShell(cmd);
+  } catch (err: any) {
+    const msg = err.message || '';
+    if (msg.includes('do not have the required permission') ||
+        msg.includes('Access is denied') ||
+        msg.includes('authorization policy') ||
+        msg.includes('UnauthorizedAccessException')) {
+      console.log('[HyperV] Permission denied, retrying with elevation...');
+      return await runPowerShellElevated(cmd);
+    }
+    throw err;
+  }
+}
+
 async function hyperVStartOrResume(host: string, vmName: string): Promise<void> {
   const remote = host ? `-ComputerName ${host} ` : '';
-  const state = (await runPowerShell(`Get-VM ${remote}-Name '${vmName}' | ForEach-Object { $_.State.ToString() }`)).trim();
+  const state = (await runHyperVPowerShell(`Get-VM ${remote}-Name '${vmName}' | ForEach-Object { $_.State.ToString() }`)).trim();
   const stateLower = state.toLowerCase();
   console.log(`[HyperV] VM "${vmName}" state: "${state}"`);
   if (stateLower === 'off' || stateLower === 'stopped') {
-    await runPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
+    await runHyperVPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
     console.log(`[HyperV] Started VM "${vmName}"`);
   } else if (stateLower === 'paused' || stateLower === 'saved') {
-    await runPowerShell(`Resume-VM ${remote}-Name '${vmName}'`);
+    await runHyperVPowerShell(`Resume-VM ${remote}-Name '${vmName}'`);
     console.log(`[HyperV] Resumed VM "${vmName}"`);
   } else if (stateLower !== 'running') {
     console.log(`[HyperV] VM "${vmName}" in unexpected state "${state}", attempting Start-VM`);
-    await runPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
+    await runHyperVPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
   } else {
     console.log(`[HyperV] VM "${vmName}" already running`);
   }
@@ -189,7 +264,7 @@ async function hyperVStartOrResume(host: string, vmName: string): Promise<void> 
 async function hyperVSave(host: string, vmName: string): Promise<void> {
   const remote = host ? `-ComputerName ${host} ` : '';
   try {
-    await runPowerShell(`Save-VM ${remote}-Name '${vmName}'`);
+    await runHyperVPowerShell(`Save-VM ${remote}-Name '${vmName}'`);
     console.log(`[HyperV] Saved VM "${vmName}"`);
   } catch (err: any) {
     console.error(`[HyperV] Failed to save "${vmName}":`, err.message);
@@ -215,7 +290,7 @@ async function hyperVTest(host: string, vmName: string): Promise<{ success: bool
   // Step 2: Try to query the VM — use pipeline to force string output of State enum
   const remote = host ? `-ComputerName ${host} ` : '';
   try {
-    const raw = await runPowerShell(
+    const raw = await runHyperVPowerShell(
       `Get-VM ${remote}-Name '${vmName}' | ForEach-Object { $_.State.ToString() }`
     );
     const state = raw.trim();
@@ -538,7 +613,7 @@ function registerIpcHandlers() {
       await hyperVStartOrResume(host, vmName);
       // Re-query state after start/resume
       const remote = host ? `-ComputerName ${host} ` : '';
-      const state = (await runPowerShell(`Get-VM ${remote}-Name '${vmName}' | ForEach-Object { $_.State.ToString() }`)).trim();
+      const state = (await runHyperVPowerShell(`Get-VM ${remote}-Name '${vmName}' | ForEach-Object { $_.State.ToString() }`)).trim();
       return { success: true, state };
     } catch (err: any) {
       return { success: false, error: err.message };
