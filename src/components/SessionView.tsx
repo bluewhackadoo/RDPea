@@ -244,11 +244,18 @@ export function SessionView() {
       }
     });
 
+    // Listen for global debug toggle from main window
+    const unsubDebugGlobal = window.rdpea.onDebugGlobal((enabled) => {
+      setDebugMode(enabled);
+      setDebugOpen(enabled);
+      if (connectionId) window.rdpea?.setDebug(connectionId, enabled);
+    });
+
     // Check initial status
     window.rdpea.getStatus(connectionId).then(setIsConnected);
 
     return () => {
-      unsubFrame(); unsubAudio(); unsubConnected(); unsubDisconnected(); unsubError(); unsubDebug();
+      unsubFrame(); unsubAudio(); unsubConnected(); unsubDisconnected(); unsubError(); unsubDebug(); unsubDebugGlobal();
       if (rafIdRef.current) { cancelAnimationFrame(rafIdRef.current); rafIdRef.current = 0; }
     };
   }, [connectionId, renderFrame, playAudio]);
@@ -453,20 +460,6 @@ export function SessionView() {
               title={isPinned ? 'Unpin window' : 'Pin window on top'}
             >
               {isPinned ? <Pin className="w-3.5 h-3.5" /> : <PinOff className="w-3.5 h-3.5" />}
-            </button>
-            <button
-              onClick={() => {
-                const next = !debugMode;
-                setDebugMode(next);
-                setDebugOpen(next);
-                if (connectionId) window.rdpea?.setDebug(connectionId, next);
-              }}
-              className={`p-1.5 rounded transition-colors ${
-                debugMode ? 'text-amber-400 hover:bg-amber-500/20' : 'text-surface-400 hover:bg-surface-700'
-              }`}
-              title={debugMode ? 'Disable debug logging' : 'Enable debug logging'}
-            >
-              <Bug className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={hideToolbar}

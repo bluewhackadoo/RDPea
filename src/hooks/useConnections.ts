@@ -60,7 +60,15 @@ export function useConnections() {
       try {
         if (window.rdpea) {
           const loaded = await window.rdpea.loadConnections();
-          setConnections(loaded || []);
+          // Normalize: ensure older profiles have defaults for newer fields
+          const normalized = (loaded || []).map(c => {
+            if (c.captureWindowsKey === undefined) c.captureWindowsKey = false;
+            if (c.hyperVEnabled === undefined) c.hyperVEnabled = false;
+            if (c.hyperVHost === undefined) c.hyperVHost = '';
+            if (c.hyperVVmName === undefined) c.hyperVVmName = '';
+            return c;
+          });
+          setConnections(normalized);
         }
       } catch (e) {
         console.error('Failed to load connections:', e);

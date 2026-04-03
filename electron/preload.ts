@@ -25,6 +25,16 @@ contextBridge.exposeInMainWorld('rdpea', {
   // Debug logging
   setDebug: (connectionId: string, enabled: boolean) =>
     ipcRenderer.send('rdp:set-debug', connectionId, enabled),
+  setDebugGlobal: (enabled: boolean) =>
+    ipcRenderer.send('rdp:set-debug-global', enabled),
+  onDebugGlobal: (callback: (enabled: boolean) => void) => {
+    const handler = (_event: any, enabled: boolean) => callback(enabled);
+    ipcRenderer.on('rdp:debug-global', handler);
+    return () => ipcRenderer.removeListener('rdp:debug-global', handler);
+  },
+
+  // App info
+  getAppVersion: () => ipcRenderer.invoke('app:version'),
 
   // Hyper-V management
   testHyperV: (host: string, vmName: string) => ipcRenderer.invoke('hyperv:test', host, vmName),

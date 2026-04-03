@@ -399,7 +399,13 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
                 <input
                   type="checkbox"
                   checked={form.hyperVEnabled}
-                  onChange={(e) => update('hyperVEnabled', e.target.checked)}
+                  onChange={(e) => {
+                    update('hyperVEnabled', e.target.checked);
+                    // Auto-populate VM name from connection host if empty
+                    if (e.target.checked && !form.hyperVVmName && form.host) {
+                      update('hyperVVmName', form.host);
+                    }
+                  }}
                   className="w-4 h-4 rounded border-surface-500 bg-surface-800 text-primary-500 focus:ring-primary-500/50"
                 />
                 <Server className="w-4 h-4 text-surface-400 group-hover:text-surface-200" />

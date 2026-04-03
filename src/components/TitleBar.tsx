@@ -1,13 +1,25 @@
-import { useState } from 'react';
-import { Minus, Square, X, Pin, PinOff, Monitor } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Minus, Square, X, Pin, PinOff, Monitor, Bug } from 'lucide-react';
 
 export function TitleBar() {
   const [isPinned, setIsPinned] = useState(false);
+  const [debugGlobal, setDebugGlobal] = useState(false);
+  const [appVersion, setAppVersion] = useState('');
+
+  useEffect(() => {
+    window.rdpea?.getAppVersion().then((v: string) => setAppVersion(v));
+  }, []);
 
   const handlePin = () => {
     const next = !isPinned;
     setIsPinned(next);
     window.rdpea?.pin(next);
+  };
+
+  const handleDebugToggle = () => {
+    const next = !debugGlobal;
+    setDebugGlobal(next);
+    window.rdpea?.setDebugGlobal(next);
   };
 
   return (
@@ -18,10 +30,22 @@ export function TitleBar() {
           <span className="text-sm font-semibold text-surface-200 tracking-tight">
             RDPea
           </span>
+          {appVersion && (
+            <span className="text-[10px] text-surface-500 font-medium">v{appVersion}</span>
+          )}
         </div>
       </div>
 
       <div className="flex items-center gap-0.5 no-drag">
+        <button
+          onClick={handleDebugToggle}
+          className={`p-1.5 rounded transition-colors ${
+            debugGlobal ? 'text-amber-400 hover:bg-amber-500/20' : 'text-surface-400 hover:bg-surface-700 hover:text-surface-200'
+          }`}
+          title={debugGlobal ? 'Disable debug logging (all sessions)' : 'Enable debug logging (all sessions)'}
+        >
+          <Bug className="w-3.5 h-3.5" />
+        </button>
         <button
           onClick={handlePin}
           className={`p-1.5 rounded transition-colors ${

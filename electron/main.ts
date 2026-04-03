@@ -16,6 +16,7 @@ const clipboardPollers = new Map<string, ReturnType<typeof setInterval>>();
 const debugConnections = new Set<string>();
 const hyperVConnections = new Map<string, { host: string; vmName: string }>();
 let lastKnownClipboardText = '';
+let debugGlobal = false;
 
 // ── Encrypted Storage ────────────────────────────────────────────────
 const STORE_PATH = path.join(app.getPath('userData'), 'connections.enc');
@@ -144,6 +145,8 @@ function createSessionWindow(connectionId: string, connectionName: string, rdpWi
   sessionWin.on('closed', () => {
     sessionWindows.delete(connectionId);
     terminateRdpClient(connectionId);
+    // Notify main window so it updates connection status
+    mainWindow?.webContents.send('rdp:disconnected', connectionId);
   });
 }
 
@@ -161,15 +164,20 @@ async function hyperVStartOrResume(host: string, vmName: string): Promise<void> 
   const remote = host ? `-ComputerName ${host} ` : '';
   try {
     const state = (await runPowerShell(`(Get-VM ${remote}-Name '${vmName}').State`)).trim();
-    console.log(`[HyperV] VM "${vmName}" state: ${state}`);
-    if (state === 'Off' || state === 'Stopped') {
+    const stateLower = state.toLowerCase();
+    console.log(`[HyperV] VM "${vmName}" state: "${state}"`);
+    if (stateLower === 'off' || stateLower === 'stopped') {
       await runPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
       console.log(`[HyperV] Started VM "${vmName}"`);
-    } else if (state === 'Paused' || state === 'Saved') {
+    } else if (stateLower === 'paused' || stateLower === 'saved') {
       await runPowerShell(`Resume-VM ${remote}-Name '${vmName}'`);
       console.log(`[HyperV] Resumed VM "${vmName}"`);
+    } else if (stateLower !== 'running') {
+      // Unknown state — try Start-VM as a best-effort
+      console.log(`[HyperV] VM "${vmName}" in unexpected state "${state}", attempting Start-VM`);
+      await runPowerShell(`Start-VM ${remote}-Name '${vmName}'`);
     } else {
-      console.log(`[HyperV] VM "${vmName}" already in state: ${state}`);
+      console.log(`[HyperV] VM "${vmName}" already running`);
     }
   } catch (err: any) {
     console.error(`[HyperV] Failed to start/resume "${vmName}":`, err.message);
@@ -240,7 +248,7 @@ async function hyperVInstallModule(): Promise<{ success: boolean; error?: string
 }
 
 function sendDebugLog(connectionId: string, message: string): void {
-  if (!debugConnections.has(connectionId)) return;
+  if (!debugGlobal && !debugConnections.has(connectionId)) return;
   const sessionWin = sessionWindows.get(connectionId);
   if (sessionWin && !sessionWin.isDestroyed()) {
     sessionWin.webContents.send('rdp:debug-log', connectionId, `[${new Date().toISOString().slice(11, 23)}] ${message}`);
@@ -297,6 +305,9 @@ async function launchRdpConnection(conn: any): Promise<{ success: boolean; error
 
     const client = new RdpClient(config);
     rdpClients.set(conn.id, client);
+
+    // If global debug is on, auto-enable for this connection
+    if (debugGlobal) debugConnections.add(conn.id);
 
     // Forward RDP client log messages to the session window when debug mode is on
     client.on('log', (msg: string) => sendDebugLog(conn.id, msg));
@@ -483,11 +494,29 @@ function registerIpcHandlers() {
     createSessionWindow(connectionId, connectionName);
   });
 
-  // Debug logging toggle
+  // Debug logging toggle (per-session)
   ipcMain.on('rdp:set-debug', (_event, connectionId: string, enabled: boolean) => {
     if (enabled) debugConnections.add(connectionId);
     else debugConnections.delete(connectionId);
   });
+
+  // Debug logging toggle (global from main window)
+  ipcMain.on('rdp:set-debug-global', (_event, enabled: boolean) => {
+    debugGlobal = enabled;
+    if (enabled) {
+      // Enable for all existing connections
+      for (const id of rdpClients.keys()) debugConnections.add(id);
+    } else {
+      debugConnections.clear();
+    }
+    // Notify all session windows so they can show/hide debug panel
+    for (const [, win] of sessionWindows) {
+      if (!win.isDestroyed()) win.webContents.send('rdp:debug-global', enabled);
+    }
+  });
+
+  // App version
+  ipcMain.handle('app:version', () => app.getVersion());
 
   // Hyper-V test & module install
   ipcMain.handle('hyperv:test', (_event, host: string, vmName: string) => {
