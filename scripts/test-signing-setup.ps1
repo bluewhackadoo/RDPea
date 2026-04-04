@@ -108,6 +108,39 @@ if (Test-Path "release\RDPea-Setup-*.exe") {
 }
 
 Write-Host ""
+Write-Host "Installing Azure Trusted Signing dlib..." -ForegroundColor Yellow
+
+# Download and install dlib if not already present
+$dlibPath = "C:\TrustedSigning\Azure.CodeSigning.Dlib.dll"
+if (-not (Test-Path $dlibPath)) {
+    $dlibUrl = "https://www.nuget.org/api/v2/package/Microsoft.Trusted.Signing.Client"
+    $tempDir = "$env:TEMP\TrustedSigning"
+    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+    
+    Write-Host "Downloading Trusted Signing client..."
+    Invoke-WebRequest -Uri $dlibUrl -OutFile "$tempDir\package.zip"
+    
+    Write-Host "Extracting..."
+    Expand-Archive -Path "$tempDir\package.zip" -DestinationPath "$tempDir\package" -Force
+    
+    # Find and copy the dlib
+    $dlibSource = Get-ChildItem -Path "$tempDir\package" -Recurse -Filter "Azure.CodeSigning.Dlib.dll" | Select-Object -First 1
+    if ($dlibSource) {
+        $dlibDest = "C:\TrustedSigning"
+        New-Item -ItemType Directory -Force -Path $dlibDest | Out-Null
+        Copy-Item $dlibSource.FullName -Destination "$dlibDest\Azure.CodeSigning.Dlib.dll"
+        Write-Host "✓ Installed Azure.CodeSigning.Dlib.dll to $dlibDest" -ForegroundColor Green
+        $env:AZURE_DLIB_PATH = "$dlibDest\Azure.CodeSigning.Dlib.dll"
+    } else {
+        Write-Host "✗ Failed to find Azure.CodeSigning.Dlib.dll in package" -ForegroundColor Red
+        exit 1
+    }
+} else {
+    Write-Host "✓ Azure.CodeSigning.Dlib.dll already installed" -ForegroundColor Green
+    $env:AZURE_DLIB_PATH = $dlibPath
+}
+
+Write-Host ""
 Write-Host "Testing Azure signing..." -ForegroundColor Yellow
 Write-Host ""
 

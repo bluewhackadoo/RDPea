@@ -28,7 +28,7 @@ jobs:
       - name: Generate icons
         run: npm run generate-icons
 
-      - name: Install Azure Trusted Signing tools
+      - name: Build & publish
         run: |
           # Add signtool.exe to PATH (from Windows SDK)
           $signToolPath = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64"
@@ -43,7 +43,7 @@ jobs:
           
           if (Test-Path $signToolPath) {
             Write-Host "Adding SignTool to PATH: $signToolPath"
-            echo "$signToolPath" >> $env:GITHUB_PATH
+            $env:PATH = "$signToolPath;$env:PATH"
           } else {
             Write-Error "SignTool.exe not found in Windows SDK"
             exit 1
@@ -67,16 +67,15 @@ jobs:
             New-Item -ItemType Directory -Force -Path $dlibDest | Out-Null
             Copy-Item $dlibSource.FullName -Destination "$dlibDest\Azure.CodeSigning.Dlib.dll"
             Write-Host "✓ Installed Azure.CodeSigning.Dlib.dll to $dlibDest"
-            
-            # Set environment variable for the signing script
-            echo "AZURE_DLIB_PATH=$dlibDest\Azure.CodeSigning.Dlib.dll" >> $env:GITHUB_ENV
+            $env:AZURE_DLIB_PATH = "$dlibDest\Azure.CodeSigning.Dlib.dll"
           } else {
             Write-Error "Failed to find Azure.CodeSigning.Dlib.dll in package"
             exit 1
           }
-
-      - name: Build & publish
-        run: npx vite build && npx electron-builder --win --publish onTag
+          
+          # Build and publish
+          npx vite build
+          npx electron-builder --win --publish onTag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Azure Trusted Signing credentials
@@ -86,7 +85,6 @@ jobs:
           AZURE_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           AZURE_CODE_SIGNING_NAME: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
           AZURE_CERT_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
-          AZURE_DLIB_PATH: ${{ env.AZURE_DLIB_PATH }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
