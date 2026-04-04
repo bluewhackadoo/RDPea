@@ -61,7 +61,8 @@ exports.default = async function(configuration) {
         'C:\\TrustedSigning\\Azure.CodeSigning.Dlib.dll',
         'C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22621.0\\x64\\Azure.CodeSigning.Dlib.dll',
         'C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\Azure.CodeSigning.Dlib.dll',
-        'C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\Azure.CodeSigning.Dlib.dll'
+        'C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\Azure.CodeSigning.Dlib.dll',
+        'C:\\Users\\bluew\\AppData\\Local\\Microsoft\\MicrosoftArtifactSigningClientTools\\Azure.CodeSigning.Dlib.dll'
       ];
 
       dlibPath = possibleDlibPaths.find(p => {
@@ -102,9 +103,53 @@ exports.default = async function(configuration) {
 
     console.log(`Using dlib: ${dlibPath}`);
 
+    // Find SignTool.exe
+    let signToolPath = null;
+    const possibleSignToolPaths = [
+      'C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22621.0\\x64\\signtool.exe',
+      'C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\signtool.exe'
+    ];
+
+    signToolPath = possibleSignToolPaths.find(p => {
+      try {
+        return fs.existsSync(p);
+      } catch {
+        return false;
+      }
+    });
+
+    // Try to find it dynamically if not found
+    if (!signToolPath) {
+      try {
+        const windowsKitsBase = 'C:\\Program Files (x86)\\Windows Kits\\10\\bin';
+        if (fs.existsSync(windowsKitsBase)) {
+          const versions = fs.readdirSync(windowsKitsBase)
+            .filter(f => f.match(/^\d+\.\d+\.\d+\.\d+$/))
+            .sort()
+            .reverse();
+          
+          for (const version of versions) {
+            const testPath = path.join(windowsKitsBase, version, 'x64', 'signtool.exe');
+            if (fs.existsSync(testPath)) {
+              signToolPath = testPath;
+              break;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Could not auto-detect signtool path:', e.message);
+      }
+    }
+
+    if (!signToolPath) {
+      throw new Error('signtool.exe not found. Please install Windows SDK from https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/');
+    }
+
+    console.log(`Using signtool: ${signToolPath}`);
+
     // Use SignTool.exe with Azure Trusted Signing dlib
     const signCommand = [
-      'signtool sign',
+      `"${signToolPath}" sign`,
       '/v',
       '/debug',
       '/fd SHA256',
@@ -118,7 +163,8 @@ exports.default = async function(configuration) {
     console.log('Running SignTool with Azure Trusted Signing...');
     execSync(signCommand, { 
       stdio: 'inherit',
-      env: env
+      env: env,
+      shell: true
     });
     
     // Clean up credentials file
