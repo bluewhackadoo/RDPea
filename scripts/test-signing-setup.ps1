@@ -1,21 +1,72 @@
 # Test Azure Trusted Signing Setup
 # This script helps you test your Azure signing configuration locally
+#
+# Usage:
+#   Interactive: .\scripts\test-signing-setup.ps1
+#   With params: .\scripts\test-signing-setup.ps1 -TenantId "..." -ClientId "..." -ClientSecret "..." -Endpoint "..." -AccountName "..." -ProfileName "..."
+
+param(
+    [string]$TenantId,
+    [string]$ClientId,
+    [string]$ClientSecret,
+    [string]$Endpoint,
+    [string]$AccountName,
+    [string]$ProfileName
+)
 
 Write-Host "=== Azure Trusted Signing Test Setup ===" -ForegroundColor Cyan
 Write-Host ""
 
-# Prompt for Azure credentials
-Write-Host "Enter your Azure Trusted Signing credentials:" -ForegroundColor Yellow
-Write-Host "(You can find these in Azure Portal and your Service Principal output)" -ForegroundColor Gray
-Write-Host ""
+# Prompt for Azure credentials if not provided as parameters
+if (-not $TenantId -or -not $ClientId -or -not $ClientSecret -or -not $Endpoint -or -not $AccountName -or -not $ProfileName) {
+    Write-Host "Enter your Azure Trusted Signing credentials:" -ForegroundColor Yellow
+    Write-Host "(You can find these in Azure Portal and your Service Principal output)" -ForegroundColor Gray
+    Write-Host ""
 
-$AZURE_TENANT_ID = Read-Host "Azure Tenant ID"
-$AZURE_CLIENT_ID = Read-Host "Azure Client ID (Service Principal App ID)"
-$AZURE_CLIENT_SECRET = Read-Host "Azure Client Secret (Service Principal Password)" -AsSecureString
-$AZURE_CLIENT_SECRET_PLAIN = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($AZURE_CLIENT_SECRET))
-$AZURE_ENDPOINT = Read-Host "Azure Signing Endpoint (e.g., https://eus.codesigning.azure.net)"
-$AZURE_CODE_SIGNING_NAME = Read-Host "Azure Code Signing Account Name"
-$AZURE_CERT_PROFILE_NAME = Read-Host "Certificate Profile Name (e.g., RDPea-CertProf)"
+    if (-not $TenantId) {
+        $AZURE_TENANT_ID = Read-Host "Azure Tenant ID"
+    } else {
+        $AZURE_TENANT_ID = $TenantId
+    }
+
+    if (-not $ClientId) {
+        $AZURE_CLIENT_ID = Read-Host "Azure Client ID (Service Principal App ID)"
+    } else {
+        $AZURE_CLIENT_ID = $ClientId
+    }
+
+    if (-not $ClientSecret) {
+        $AZURE_CLIENT_SECRET_SECURE = Read-Host "Azure Client Secret (Service Principal Password)" -AsSecureString
+        $AZURE_CLIENT_SECRET_PLAIN = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($AZURE_CLIENT_SECRET_SECURE))
+    } else {
+        $AZURE_CLIENT_SECRET_PLAIN = $ClientSecret
+    }
+
+    if (-not $Endpoint) {
+        $AZURE_ENDPOINT = Read-Host "Azure Signing Endpoint (e.g., https://eus.codesigning.azure.net)"
+    } else {
+        $AZURE_ENDPOINT = $Endpoint
+    }
+
+    if (-not $AccountName) {
+        $AZURE_CODE_SIGNING_NAME = Read-Host "Azure Code Signing Account Name"
+    } else {
+        $AZURE_CODE_SIGNING_NAME = $AccountName
+    }
+
+    if (-not $ProfileName) {
+        $AZURE_CERT_PROFILE_NAME = Read-Host "Certificate Profile Name (e.g., RDPea-CertProf)"
+    } else {
+        $AZURE_CERT_PROFILE_NAME = $ProfileName
+    }
+} else {
+    $AZURE_TENANT_ID = $TenantId
+    $AZURE_CLIENT_ID = $ClientId
+    $AZURE_CLIENT_SECRET_PLAIN = $ClientSecret
+    $AZURE_ENDPOINT = $Endpoint
+    $AZURE_CODE_SIGNING_NAME = $AccountName
+    $AZURE_CERT_PROFILE_NAME = $ProfileName
+}
 
 Write-Host ""
 Write-Host "Setting environment variables..." -ForegroundColor Yellow
