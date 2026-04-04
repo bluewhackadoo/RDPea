@@ -12,22 +12,72 @@ This document explains how to configure Azure Trusted Signing for code signing W
 
 ### 1. Create Azure Trusted Signing Account
 
-1. Go to Azure Portal: https://portal.azure.com
-2. Search for "Trusted Signing"
-3. Create a new Trusted Signing account
-4. Note the **Account Name** and **Endpoint URL**
+1. Go to [Azure Portal](https://portal.azure.com)
+2. Search for "Trusted Signing" and create a new account
+3. Choose your subscription and resource group
+4. Select a region (e.g., East US)
+5. Complete the account creation
 
-### 2. Create Certificate Profile
+### 2. Create Service Principal
 
-1. In your Trusted Signing account, go to **Certificate Profiles**
-2. Create a new profile (e.g., "RDPea-Production")
-3. Configure the certificate details:
-   - **Subject Name**: CN=bluewhackadoo
-   - **Validity**: 1-3 years
-   - **Key Usage**: Code Signing
-4. Note the **Certificate Profile Name**
+A Service Principal is the identity that will authenticate and sign your code.
 
-### 3. Create Service Principal
+**Using Azure CLI (Recommended):**
+
+1. Open Azure Cloud Shell or install [Azure CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)
+2. Run the following command (replace `RDPea-Signing-SP` with your preferred name):
+
+```bash
+az ad sp create-for-rbac --name "RDPea-Signing-SP" --role "Trusted Signing Identity Verifier" --scopes /subscriptions/YOUR_SUBSCRIPTION_ID
+```
+
+3. **Save the output** - you'll need these values:
+   - `appId` → This is your **AZURE_CLIENT_ID**
+   - `password` → This is your **AZURE_CLIENT_SECRET**
+   - `tenant` → This is your **AZURE_TENANT_ID**
+
+**Using Azure Portal (Alternative):**
+
+1. Go to Azure Portal → **Azure Active Directory** (or **Microsoft Entra ID**)
+2. Click **App registrations** → **+ New registration**
+3. Name: `RDPea-Signing-SP`
+4. Click **Register**
+5. Note the **Application (client) ID** → This is your **AZURE_CLIENT_ID**
+6. Note the **Directory (tenant) ID** → This is your **AZURE_TENANT_ID**
+7. Click **Certificates & secrets** → **+ New client secret**
+8. Description: `GitHub Actions Signing`
+9. Expiration: Choose duration (e.g., 24 months)
+10. Click **Add**
+11. **Copy the secret value immediately** → This is your **AZURE_CLIENT_SECRET** (you won't see it again!)
+
+### 3. Create Certificate Profile
+
+1. In your Trusted Signing account, go to "Certificate Profiles"
+2. Click "+ Create"
+3. Choose profile type:
+   - **Public Trust**: For public distribution (requires identity validation)
+   - **Private Trust**: For internal/testing (no validation required)
+4. Complete the profile creation
+5. Note the **Certificate Profile Name** (e.g., `RDPea-CertProf`)
+
+### 4. Assign Service Principal Permissions
+
+Now grant your Service Principal permission to sign with the certificate profile:
+
+1. Go to your **Trusted Signing Account** → **Certificate Profiles**
+2. Select your certificate profile (e.g., `RDPea-CertProf`)
+3. Click **Access control (IAM)** in the left menu
+4. Click **+ Add** → **Add role assignment**
+5. Select role: **Trusted Signing Certificate Profile Signer**
+6. Click **Next**
+7. Click **+ Select members**
+8. Search for your Service Principal name (e.g., `RDPea-Signing-SP`)
+9. Select it and click **Select**
+10. Click **Review + assign** twice
+
+Wait 2-3 minutes for the permission to propagate.
+
+### 5. Get Azure Endpoint and Account Name
 
 ```bash
 # Create service principal
@@ -108,6 +158,23 @@ When signed correctly, you should see:
 
 - The Service Principal needs "Trusted Signing Certificate Profile Signer" role
 - Verify the scope includes the correct resource group and account
+
+### 403 Forbidden Error
+If you see `Status: 403 (Forbidden)` when signing, the Service Principal doesn't have permission to use the certificate profile.
+
+**Fix:**
+1. Go to Azure Portal → Your Trusted Signing Account → Certificate Profiles
+2. Select your certificate profile (e.g., `RDPea-CertProf`)
+3. Click **Access control (IAM)** in the left menu
+4. Click **+ Add** → **Add role assignment**
+5. Select role: **Trusted Signing Certificate Profile Signer**
+6. Click **Next**
+7. Click **+ Select members**
+8. Search for your Service Principal by name (e.g., `RDPea-Signing-SP`)
+9. Select it and click **Select**
+10. Click **Review + assign** twice
+
+Wait a few minutes for the permission to propagate, then try signing again.
 
 ### Signature Not Showing
 
