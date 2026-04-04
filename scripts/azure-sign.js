@@ -48,20 +48,30 @@ exports.default = async function(configuration) {
     };
 
     // Find the Azure Code Signing dlib
-    // Common locations on GitHub Actions Windows runners
-    const possibleDlibPaths = [
-      'C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22621.0\\x64\\Azure.CodeSigning.Dlib.dll',
-      'C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\Azure.CodeSigning.Dlib.dll',
-      'C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\Azure.CodeSigning.Dlib.dll'
-    ];
+    let dlibPath = null;
+    
+    // Check if AZURE_DLIB_PATH is set (from GitHub Actions)
+    if (process.env.AZURE_DLIB_PATH && fs.existsSync(process.env.AZURE_DLIB_PATH)) {
+      dlibPath = process.env.AZURE_DLIB_PATH;
+    }
+    
+    // Fall back to common locations
+    if (!dlibPath) {
+      const possibleDlibPaths = [
+        'C:\\TrustedSigning\\Azure.CodeSigning.Dlib.dll',
+        'C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22621.0\\x64\\Azure.CodeSigning.Dlib.dll',
+        'C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\Azure.CodeSigning.Dlib.dll',
+        'C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\Azure.CodeSigning.Dlib.dll'
+      ];
 
-    let dlibPath = possibleDlibPaths.find(p => {
-      try {
-        return fs.existsSync(p);
-      } catch {
-        return false;
-      }
-    });
+      dlibPath = possibleDlibPaths.find(p => {
+        try {
+          return fs.existsSync(p);
+        } catch {
+          return false;
+        }
+      });
+    }
 
     if (!dlibPath) {
       // Try to find it dynamically

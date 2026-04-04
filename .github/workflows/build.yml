@@ -28,6 +28,34 @@ jobs:
       - name: Generate icons
         run: npm run generate-icons
 
+      - name: Install Azure Trusted Signing tools
+        run: |
+          # Download and install Trusted Signing dlib
+          $dlibUrl = "https://www.nuget.org/api/v2/package/Microsoft.Trusted.Signing.Client"
+          $tempDir = "$env:TEMP\TrustedSigning"
+          New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+          
+          Write-Host "Downloading Trusted Signing client..."
+          Invoke-WebRequest -Uri $dlibUrl -OutFile "$tempDir\package.zip"
+          
+          Write-Host "Extracting..."
+          Expand-Archive -Path "$tempDir\package.zip" -DestinationPath "$tempDir\package" -Force
+          
+          # Find and copy the dlib to a known location
+          $dlibSource = Get-ChildItem -Path "$tempDir\package" -Recurse -Filter "Azure.CodeSigning.Dlib.dll" | Select-Object -First 1
+          if ($dlibSource) {
+            $dlibDest = "C:\TrustedSigning"
+            New-Item -ItemType Directory -Force -Path $dlibDest | Out-Null
+            Copy-Item $dlibSource.FullName -Destination "$dlibDest\Azure.CodeSigning.Dlib.dll"
+            Write-Host "✓ Installed Azure.CodeSigning.Dlib.dll to $dlibDest"
+            
+            # Set environment variable for the signing script
+            echo "AZURE_DLIB_PATH=$dlibDest\Azure.CodeSigning.Dlib.dll" >> $env:GITHUB_ENV
+          } else {
+            Write-Error "Failed to find Azure.CodeSigning.Dlib.dll in package"
+            exit 1
+          }
+
       - name: Build & publish
         run: npx vite build && npx electron-builder --win --publish onTag
         env:
@@ -39,6 +67,7 @@ jobs:
           AZURE_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           AZURE_CODE_SIGNING_NAME: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
           AZURE_CERT_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+          AZURE_DLIB_PATH: ${{ env.AZURE_DLIB_PATH }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
