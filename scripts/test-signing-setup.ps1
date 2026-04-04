@@ -108,7 +108,35 @@ if (Test-Path "release\RDPea-Setup-*.exe") {
 }
 
 Write-Host ""
-Write-Host "Installing Azure Trusted Signing dlib..." -ForegroundColor Yellow
+Write-Host "Setting up signing tools..." -ForegroundColor Yellow
+
+# Add signtool.exe to PATH
+$signToolPath = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64"
+if (-not (Test-Path "$signToolPath\signtool.exe")) {
+    # Try to find any available Windows SDK version
+    $sdkBase = "C:\Program Files (x86)\Windows Kits\10\bin"
+    if (Test-Path $sdkBase) {
+        $versions = Get-ChildItem $sdkBase -Directory | Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } | Sort-Object Name -Descending
+        if ($versions) {
+            foreach ($version in $versions) {
+                $testPath = Join-Path $version.FullName "x64"
+                if (Test-Path "$testPath\signtool.exe") {
+                    $signToolPath = $testPath
+                    break
+                }
+            }
+        }
+    }
+}
+
+if (Test-Path "$signToolPath\signtool.exe") {
+    Write-Host "✓ Found SignTool at: $signToolPath" -ForegroundColor Green
+    $env:PATH = "$signToolPath;$env:PATH"
+} else {
+    Write-Host "✗ SignTool.exe not found in Windows SDK" -ForegroundColor Red
+    Write-Host "  Install Windows SDK from: https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/" -ForegroundColor Yellow
+    exit 1
+}
 
 # Download and install dlib if not already present
 $dlibPath = "C:\TrustedSigning\Azure.CodeSigning.Dlib.dll"
