@@ -152,6 +152,7 @@ exports.default = async function(configuration) {
       `"${signToolPath}" sign`,
       '/v',
       '/debug',
+      '/a',
       '/fd SHA256',
       '/tr "http://timestamp.acs.microsoft.com"',
       '/td SHA256',
