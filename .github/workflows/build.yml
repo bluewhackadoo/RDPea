@@ -29,62 +29,29 @@ jobs:
         run: npm run generate-icons
 
       - name: Build & publish
-        run: |
-          # Add signtool.exe to PATH (from Windows SDK)
-          $signToolPath = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64"
-          if (-not (Test-Path $signToolPath)) {
-            # Try to find any available Windows SDK version
-            $sdkBase = "C:\Program Files (x86)\Windows Kits\10\bin"
-            $versions = Get-ChildItem $sdkBase -Directory | Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } | Sort-Object Name -Descending
-            if ($versions) {
-              $signToolPath = Join-Path $versions[0].FullName "x64"
-            }
-          }
-          
-          if (Test-Path $signToolPath) {
-            Write-Host "Adding SignTool to PATH: $signToolPath"
-            $env:PATH = "$signToolPath;$env:PATH"
-          } else {
-            Write-Error "SignTool.exe not found in Windows SDK"
-            exit 1
-          }
-          
-          # Download and install Trusted Signing dlib
-          $dlibUrl = "https://www.nuget.org/api/v2/package/Microsoft.Trusted.Signing.Client"
-          $tempDir = "$env:TEMP\TrustedSigning"
-          New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
-          
-          Write-Host "Downloading Trusted Signing client..."
-          Invoke-WebRequest -Uri $dlibUrl -OutFile "$tempDir\package.zip"
-          
-          Write-Host "Extracting..."
-          Expand-Archive -Path "$tempDir\package.zip" -DestinationPath "$tempDir\package" -Force
-          
-          # Find and copy the dlib to a known location
-          $dlibSource = Get-ChildItem -Path "$tempDir\package" -Recurse -Filter "Azure.CodeSigning.Dlib.dll" | Select-Object -First 1
-          if ($dlibSource) {
-            $dlibDest = "C:\TrustedSigning"
-            New-Item -ItemType Directory -Force -Path $dlibDest | Out-Null
-            Copy-Item $dlibSource.FullName -Destination "$dlibDest\Azure.CodeSigning.Dlib.dll"
-            Write-Host "✓ Installed Azure.CodeSigning.Dlib.dll to $dlibDest"
-            $env:AZURE_DLIB_PATH = "$dlibDest\Azure.CodeSigning.Dlib.dll"
-          } else {
-            Write-Error "Failed to find Azure.CodeSigning.Dlib.dll in package"
-            exit 1
-          }
-          
-          # Build and publish
-          npx vite build
-          npx electron-builder --win --publish onTag
+        run: npx vite build && npx electron-builder --win --publish onTag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Azure Trusted Signing credentials
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          AZURE_CODE_SIGNING_NAME: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
-          AZURE_CERT_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+
+      - name: Sign with Azure Trusted Signing
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+          files-folder: ${{ github.workspace }}/release
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

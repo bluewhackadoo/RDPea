@@ -72,9 +72,7 @@
           ]
         }
       ],
-      "icon": "build/icon.png",
-      "sign": "./scripts/azure-sign.js",
-      "signingHashAlgorithms": ["sha256"]
+      "icon": "build/icon.png"
     },
     "nsis": {
       "oneClick": true,
