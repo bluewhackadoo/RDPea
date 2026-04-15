@@ -28,15 +28,10 @@ jobs:
       - name: Generate icons
         run: npm run generate-icons
 
-      - name: Build & publish
-        run: npx vite build && npx electron-builder --win --publish onTag
+      - name: Build (no publish)
+        run: npx vite build && npx electron-builder --win --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
 
       - name: Sign with Azure Trusted Signing
         uses: azure/trusted-signing-action@v0.5.0
@@ -52,6 +47,19 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
+
+      - name: Publish signed artifacts to GitHub Release
+        run: |
+          $tag = "${{ github.ref_name }}"
+          # Create release if it doesn't exist (other jobs may also create it)
+          gh release create $tag --title "RDPea $tag" --generate-notes --draft=false 2>$null || true
+          # Upload signed exe and update yml files
+          Get-ChildItem release/*.exe, release/*.yml | ForEach-Object {
+            Write-Host "Uploading: $($_.Name)"
+            gh release upload $tag $_.FullName --clobber
+          }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
