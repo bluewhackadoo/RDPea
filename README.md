@@ -57,21 +57,21 @@ brew install --cask rdpea
 
 **AppImage** (universal):
 ```bash
-wget https://github.com/bluewhackadoo/RDPea/releases/latest/download/RDPea-1.0.3.AppImage
-chmod +x RDPea-1.0.3.AppImage
-./RDPea-1.0.3.AppImage
+wget https://github.com/bluewhackadoo/RDPea/releases/latest/download/RDPea-1.0.8.AppImage
+chmod +x RDPea-1.0.8.AppImage
+./RDPea-1.0.8.AppImage
 ```
 
 **Debian/Ubuntu**:
 ```bash
-wget https://github.com/bluewhackadoo/RDPea/releases/latest/download/rdpea_1.0.3_amd64.deb
-sudo dpkg -i rdpea_1.0.3_amd64.deb
+wget https://github.com/bluewhackadoo/RDPea/releases/latest/download/rdpea_1.0.8_amd64.deb
+sudo dpkg -i rdpea_1.0.8_amd64.deb
 ```
 
 **Fedora/RHEL**:
 ```bash
-wget https://github.com/bluewhackadoo/RDPea/releases/latest/download/rdpea-1.0.3.x86_64.rpm
-sudo rpm -i rdpea-1.0.3.x86_64.rpm
+wget https://github.com/bluewhackadoo/RDPea/releases/latest/download/rdpea-1.0.8.x86_64.rpm
+sudo rpm -i rdpea-1.0.8.x86_64.rpm
 ```
 
 **Snap**:
@@ -172,6 +172,32 @@ The build process:
 - RDP connections use **TLS encryption** with NTLMv2 authentication (CredSSP/NLA)
 - No external executables — the entire RDP protocol runs within the Electron process
 - Standard RDP security (RC4 encryption) supported as fallback for legacy servers
+
+## ❤️ Support RDPea
+
+RDPea is open source and free to use. If you find it useful, there are a few ways to support continued development:
+
+### 💡 Sponsor the project 💵
+Support ongoing work and improvements:
+👉 https://github.com/sponsors/bluewhackadoo
+
+### 🛠️ Paid support / setup help
+Need help getting RDPea running or customized?
+👉 bluewhackadoo@RDPea.com 
+
+- Initial setup & config
+- Performance tuning
+- Custom integrations
+
+### 🚀 Future “Pro” features (optional)
+Planned enhancements for power users:
+- Advanced automation workflows
+- Extended integrations
+- Priority feature requests
+
+---
+
+Your support helps keep RDPea actively developed 🙌
 
 ## License
 
