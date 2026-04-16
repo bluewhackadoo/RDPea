@@ -134,3 +134,119 @@ jobs:
             release/*.AppImage
             release/*.deb
             release/*.yml
+
+  publish-winget:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Submit to Winget
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: bluewhackadoo.RDPea
+          installers-regex: 'RDPea-Setup-.*\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
+
+  publish-chocolatey:
+    needs: build-windows
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: release
+
+      - name: Build and push Chocolatey package
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $tag = "${{ github.ref_name }}"
+
+          # Get SHA256 of the signed setup exe
+          $setupExe = Get-ChildItem release/*Setup*.exe | Select-Object -First 1
+          if (-not $setupExe) {
+            Write-Error "Setup exe not found in release artifacts"
+            exit 1
+          }
+          $sha256 = (Get-FileHash $setupExe.FullName -Algorithm SHA256).Hash
+          $url = "https://github.com/bluewhackadoo/RDPea/releases/download/$tag/$($setupExe.Name)"
+
+          Write-Host "Version: $version"
+          Write-Host "URL: $url"
+          Write-Host "SHA256: $sha256"
+
+          # Update nuspec version and release notes URL
+          $nuspec = Get-Content packaging/chocolatey/rdpea.nuspec -Raw
+          $nuspec = $nuspec -replace '<version>[^<]*</version>', "<version>$version</version>"
+          $nuspec = $nuspec -replace 'releases/tag/v[^"<]*', "releases/tag/$tag"
+          Set-Content packaging/chocolatey/rdpea.nuspec $nuspec -NoNewline
+
+          # Update install script URL and checksum
+          $install = Get-Content packaging/chocolatey/tools/chocolateyinstall.ps1 -Raw
+          $install = $install -replace "\`$url64\s*=\s*'[^']*'", "`$url64      = '$url'"
+          $install = $install -replace "checksum64\s*=\s*'[^']*'", "checksum64    = '$sha256'"
+          Set-Content packaging/chocolatey/tools/chocolateyinstall.ps1 $install -NoNewline
+
+          Write-Host "--- Updated nuspec ---"
+          Get-Content packaging/chocolatey/rdpea.nuspec
+          Write-Host "--- Updated install script ---"
+          Get-Content packaging/chocolatey/tools/chocolateyinstall.ps1
+
+          # Pack and push
+          choco pack packaging/chocolatey/rdpea.nuspec --output-directory .
+          Get-ChildItem *.nupkg
+          choco push "rdpea.$version.nupkg" --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
+        env:
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+
+  publish-snap:
+    needs: build-linux
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release
+          path: artifacts
+
+      - name: Prepare snapcraft.yaml
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          APPIMAGE=$(ls artifacts/*.AppImage 2>/dev/null | head -1)
+          if [ -z "$APPIMAGE" ]; then
+            echo "No AppImage found in artifacts"
+            exit 1
+          fi
+          APPIMAGE_NAME=$(basename "$APPIMAGE")
+
+          echo "Version: $VERSION"
+          echo "AppImage: $APPIMAGE_NAME"
+
+          # Copy snapcraft.yaml to standard location and update version + source
+          mkdir -p snap
+          sed -e "s/^version: .*/version: '$VERSION'/" \
+              -e "s|source: .*AppImage|source: $(realpath $APPIMAGE)|" \
+              packaging/snap/snapcraft.yaml > snap/snapcraft.yaml
+
+          echo "--- snapcraft.yaml ---"
+          cat snap/snapcraft.yaml
+
+      - name: Build snap
+        uses: snapcore/action-build@v1
+        id: build
+
+      - name: Publish to Snap Store
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: stable
