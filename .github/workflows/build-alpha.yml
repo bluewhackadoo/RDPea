@@ -1,0 +1,132 @@
+name: Alpha Build
+
+on:
+  push:
+    branches:
+      - bun-migration
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-alpha:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Stamp alpha version
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json | ConvertFrom-Json
+          $base = $pkg.version -replace '-.*$', ''
+          $alpha = "$base-alpha.${{ github.run_number }}"
+          Write-Host "Alpha version: $alpha"
+          $pkg.version = $alpha
+          $pkg | ConvertTo-Json -Depth 20 | Set-Content package.json
+          echo "ALPHA_VERSION=$alpha" >> $env:GITHUB_ENV
+
+      - name: Generate icons
+        run: bun run generate-icons
+
+      - name: Build & publish
+        run: bunx --bun vite build && bunx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-alpha
+          path: |
+            release/*.exe
+            release/*.yml
+
+  build-macos-alpha:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Stamp alpha version
+        run: |
+          BASE=$(node -p "require('./package.json').version.replace(/-.*$/, '')")
+          ALPHA="${BASE}-alpha.${{ github.run_number }}"
+          echo "Alpha version: $ALPHA"
+          node -e "const p=require('./package.json');p.version='$ALPHA';require('fs').writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          echo "ALPHA_VERSION=$ALPHA" >> $GITHUB_ENV
+
+      - name: Generate icons
+        run: bun run generate-icons
+
+      - name: Build & publish
+        run: bunx --bun vite build && bunx electron-builder --mac --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-alpha
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.yml
+
+  build-linux-alpha:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Stamp alpha version
+        run: |
+          BASE=$(node -p "require('./package.json').version.replace(/-.*$/, '')")
+          ALPHA="${BASE}-alpha.${{ github.run_number }}"
+          echo "Alpha version: $ALPHA"
+          node -e "const p=require('./package.json');p.version='$ALPHA';require('fs').writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          echo "ALPHA_VERSION=$ALPHA" >> $GITHUB_ENV
+
+      - name: Generate icons
+        run: bun run generate-icons
+
+      - name: Build & publish
+        run: bunx --bun vite build && bunx electron-builder --linux --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-alpha
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.yml

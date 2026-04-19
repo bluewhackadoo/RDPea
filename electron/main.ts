@@ -712,8 +712,8 @@ function setupAutoUpdater() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
-  // Beta builds should find other beta (pre-release) updates
-  if (app.getVersion().includes('beta')) {
+  // Alpha and beta builds should find other pre-release updates
+  if (app.getVersion().includes('alpha') || app.getVersion().includes('beta')) {
     autoUpdater.allowPrerelease = true;
   }
 

@@ -16,14 +16,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: '22'
-          cache: 'npm'
+          bun-version: latest
 
       - name: Install dependencies
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       - name: Stamp beta version
         shell: pwsh
@@ -37,10 +36,10 @@ jobs:
           echo "BETA_VERSION=$beta" >> $env:GITHUB_ENV
 
       - name: Generate icons
-        run: npm run generate-icons
+        run: bun run generate-icons
 
       - name: Build & publish
-        run: npx vite build && npx electron-builder --win --publish always
+        run: bunx --bun vite build && bunx electron-builder --win --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
