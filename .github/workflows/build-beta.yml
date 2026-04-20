@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Stamp beta version
+      - name: Stamp beta version & identity
         shell: pwsh
         run: |
           $pkg = Get-Content package.json | ConvertFrom-Json
@@ -32,6 +32,9 @@ jobs:
           $beta = "$base-beta.${{ github.run_number }}"
           Write-Host "Beta version: $beta"
           $pkg.version = $beta
+          $pkg.name = 'rdpea-beta'
+          $pkg.build.appId = 'com.rdpea.app.beta'
+          $pkg.build.productName = 'RDPea Beta'
           $pkg | ConvertTo-Json -Depth 20 | Set-Content package.json
           echo "BETA_VERSION=$beta" >> $env:GITHUB_ENV
 
