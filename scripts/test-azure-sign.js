@@ -4,8 +4,8 @@
  * 
  * Usage:
  * 1. Set environment variables with your Azure credentials
- * 2. Build a test executable: npm run electron:build
- * 3. Run: node scripts/test-azure-sign.js path/to/your.exe
+ * 2. Build a test executable: bun run electron:build
+ * 3. Run: bun scripts/test-azure-sign.js path/to/your.exe
  */
 
 const azureSign = require('./azure-sign.js');
@@ -13,8 +13,8 @@ const path = require('path');
 
 // Check if file path was provided
 if (process.argv.length < 3) {
-  console.error('Usage: node scripts/test-azure-sign.js <path-to-exe>');
-  console.error('Example: node scripts/test-azure-sign.js release/RDPea-Setup-1.0.4.exe');
+  console.error('Usage: bun scripts/test-azure-sign.js <path-to-exe>');
+  console.error('Example: bun scripts/test-azure-sign.js release/RDPea-Setup-1.0.4.exe');
   process.exit(1);
 }
 
