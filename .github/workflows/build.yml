@@ -48,6 +48,65 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
+      - name: Update latest.yml with post-signing hashes
+        run: |
+          # After signing, the exe hash changed. Recalculate and update latest.yml
+          Get-ChildItem release/*.yml | ForEach-Object {
+            $ymlFile = $_.FullName
+            $content = Get-Content $ymlFile -Raw
+            Write-Host "Processing: $($_.Name)"
+
+            # Find each file/sha512 pair and recalculate
+            $lines = Get-Content $ymlFile
+            $updatedLines = @()
+            $nextLineIsHash = $false
+            $currentFile = $null
+
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              $line = $lines[$i]
+
+              # Match "  - url: SomeFile.exe" or "path: SomeFile.exe"
+              if ($line -match '^\s+- url:\s+(.+\.exe)\s*$') {
+                $currentFile = $Matches[1]
+              }
+              elseif ($line -match '^\s+path:\s+(.+\.exe)\s*$') {
+                $currentFile = $Matches[1]
+              }
+
+              # Match "    sha512: <hash>" and replace if we have a current exe file
+              if ($line -match '^\s+sha512:\s+' -and $currentFile) {
+                $exePath = Join-Path "release" $currentFile
+                if (Test-Path $exePath) {
+                  $bytes = [System.IO.File]::ReadAllBytes($exePath)
+                  $sha512 = [System.Security.Cryptography.SHA512]::Create()
+                  $hash = $sha512.ComputeHash($bytes)
+                  $b64 = [Convert]::ToBase64String($hash)
+                  $indent = $line -replace '(^\s+sha512:).*', '$1'
+                  $line = "$indent $b64"
+                  Write-Host "  Updated hash for $currentFile"
+                }
+                $currentFile = $null
+              }
+
+              # Match "    size: <number>" and update if we have a current exe file
+              if ($line -match '^\s+size:\s+\d+' -and $currentFile) {
+                $exePath = Join-Path "release" $currentFile
+                if (Test-Path $exePath) {
+                  $size = (Get-Item $exePath).Length
+                  $indent = $line -replace '(^\s+size:).*', '$1'
+                  $line = "$indent $size"
+                  Write-Host "  Updated size for $currentFile"
+                }
+              }
+
+              $updatedLines += $line
+            }
+
+            $updatedLines -join "`n" | Set-Content $ymlFile -NoNewline
+            Write-Host "--- Updated $($_.Name) ---"
+            Get-Content $ymlFile
+          }
+
       - name: Publish signed artifacts to GitHub Release
         run: |
           $tag = "${{ github.ref_name }}"
