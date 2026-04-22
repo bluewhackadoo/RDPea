@@ -699,6 +699,11 @@ function registerIpcHandlers() {
     }
   });
 
+  // Quit and install downloaded update
+  ipcMain.on('update:install', () => {
+    autoUpdater.quitAndInstall();
+  });
+
   // Shell
   ipcMain.on('shell:open-external', (_event, url: string) => {
     shell.openExternal(url);
