@@ -125,7 +125,13 @@ export function UpdateNotification() {
                   Update Ready
                 </div>
                 <div className="text-xs text-slate-400">
-                  v{status.version} will install on restart
+                  v{status.version} will install on{' '}
+                  <button
+                    onClick={() => window.rdpea?.restartAndInstall()}
+                    className="text-blue-400 hover:text-blue-300 underline underline-offset-2 cursor-pointer"
+                  >
+                    restart
+                  </button>
                 </div>
               </div>
             )}

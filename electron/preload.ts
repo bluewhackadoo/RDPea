@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld('rdpea', {
 
   // Auto-update
   checkForUpdates: () => ipcRenderer.send('update:check'),
+  restartAndInstall: () => ipcRenderer.send('update:install'),
 
   // Auto-update events
   onUpdateChecking: (callback: () => void) => {

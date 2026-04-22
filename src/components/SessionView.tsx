@@ -434,7 +434,7 @@ export function SessionView() {
   }, []);
 
   return (
-    <div className="flex-1 flex flex-col bg-surface-950" onMouseMove={handleContainerMouseMove}>
+    <div className="flex-1 flex flex-col bg-surface-950 min-h-0" onMouseMove={handleContainerMouseMove}>
       {/* ── Title bar (visible by default) ── */}
       {showToolbar && (
         <div className="flex items-center justify-between h-10 bg-surface-900 border-b border-surface-700/50 shrink-0 drag-region select-none">
@@ -517,7 +517,7 @@ export function SessionView() {
       {/* ── Session canvas / status area ── */}
       <div
         ref={containerRef}
-        className="flex-1 flex items-center justify-center bg-black relative overflow-hidden"
+        className="flex-1 flex items-center justify-center bg-black relative overflow-hidden min-h-0"
         tabIndex={0}
       >
         {isConnected ? (
