@@ -113,6 +113,13 @@
     "snap": {
       "confinement": "strict",
       "grade": "stable",
+      "publish": [
+        {
+          "provider": "github",
+          "owner": "bluewhackadoo",
+          "repo": "RDPea"
+        }
+      ],
       "plugs": [
         "default",
         "audio-playback",
