@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { v4 as uuidv4 } from 'uuid';
 import { RdpConnection, ViewMode, SortField, SortDirection } from '../types';
 
 const CONNECTION_COLORS = [
@@ -13,7 +12,7 @@ function getRandomColor(): string {
 
 export function createDefaultConnection(partial?: Partial<RdpConnection>): RdpConnection {
   return {
-    id: uuidv4(),
+    id: crypto.randomUUID(),
     name: '',
     host: '',
     port: 3389,
@@ -132,7 +131,7 @@ export function useConnections() {
       if (!source) return prev;
       const copy = {
         ...source,
-        id: uuidv4(),
+        id: crypto.randomUUID(),
         name: `${source.name} (Copy)`,
         createdAt: new Date().toISOString(),
         lastConnected: null,
