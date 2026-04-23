@@ -174,6 +174,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install snapcraft
+        run: sudo snap install snapcraft --classic
+
       - name: Generate icons
         run: bun run generate-icons
 
@@ -189,6 +192,7 @@ jobs:
           path: |
             release/*.AppImage
             release/*.deb
+            release/*.snap
             release/*.yml
 
   publish-winget:
@@ -264,45 +268,23 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
       - name: Download Linux artifacts
         uses: actions/download-artifact@v8
         with:
           name: linux-release
           path: artifacts
 
-      - name: Prepare snapcraft.yaml
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          APPIMAGE=$(ls artifacts/*.AppImage 2>/dev/null | head -1)
-          if [ -z "$APPIMAGE" ]; then
-            echo "No AppImage found in artifacts"
-            exit 1
-          fi
-          APPIMAGE_NAME=$(basename "$APPIMAGE")
-
-          echo "Version: $VERSION"
-          echo "AppImage: $APPIMAGE_NAME"
-
-          # Copy snapcraft.yaml to standard location and update version + source
-          mkdir -p snap
-          sed -e "s/^version: .*/version: '$VERSION'/" \
-              -e "s|source: .*AppImage|source: $(realpath $APPIMAGE)|" \
-              packaging/snap/snapcraft.yaml > snap/snapcraft.yaml
-
-          echo "--- snapcraft.yaml ---"
-          cat snap/snapcraft.yaml
-
-      - name: Build snap
-        uses: snapcore/action-build@v1
-        id: build
+      - name: Install snapcraft
+        run: sudo snap install snapcraft --classic
 
       - name: Publish to Snap Store
-        uses: snapcore/action-publish@v1
+        run: |
+          SNAP=$(ls artifacts/*.snap 2>/dev/null | head -1)
+          if [ -z "$SNAP" ]; then
+            echo "No snap found in artifacts"
+            exit 1
+          fi
+          echo "Publishing: $(basename $SNAP)"
+          snapcraft upload "$SNAP" --release=stable
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
-        with:
-          snap: ${{ steps.build.outputs.snap }}
-          release: stable
