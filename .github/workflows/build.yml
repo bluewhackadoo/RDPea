@@ -180,8 +180,18 @@ jobs:
       - name: Generate icons
         run: bun run generate-icons
 
-      - name: Build & publish
-        run: bunx --bun vite build && bunx electron-builder --linux --publish onTag
+      - name: Build (no publish)
+        run: bunx --bun vite build && bunx electron-builder --linux --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish artifacts to GitHub Release
+        run: |
+          tag="${{ github.ref_name }}"
+          gh release create "$tag" --title "RDPea $tag" --generate-notes --draft=false 2>/dev/null || true
+          for f in release/*.AppImage release/*.deb release/*.snap release/*.yml; do
+            [ -f "$f" ] && echo "Uploading: $(basename $f)" && gh release upload "$tag" "$f" --clobber
+          done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
