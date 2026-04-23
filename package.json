@@ -103,11 +103,24 @@
     "linux": {
       "target": [
         "AppImage",
-        "deb"
+        "deb",
+        "snap"
       ],
       "icon": "build/icons",
       "category": "Network",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "snap": {
+      "confinement": "strict",
+      "grade": "stable",
+      "plugs": [
+        "default",
+        "audio-playback",
+        "network",
+        "network-bind",
+        "browser-support",
+        "opengl"
+      ]
     },
     "publish": {
       "provider": "github",
