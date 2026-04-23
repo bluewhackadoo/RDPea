@@ -1,6 +1,6 @@
 {
   "name": "rdpea",
-  "version": "1.0.12",
+  "version": "1.1.0",
   "description": "Lightweight RDP Remote Desktop Client",
   "author": {
     "name": "bluewhackadoo",
@@ -9,27 +9,24 @@
   "license": "MIT",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "electron:build": "npm run generate-icons && vite build && electron-builder",
-    "generate-icons": "node scripts/svg-to-icon.js"
+    "dev": "bunx --bun vite",
+    "build": "bunx --bun vite build",
+    "preview": "bunx --bun vite preview",
+    "electron:dev": "bunx --bun concurrently \"bunx --bun vite\" \"bunx wait-on http://localhost:5173 && bunx electron .\"",
+    "electron:build": "bun run generate-icons && bunx --bun vite build && bunx electron-builder",
+    "generate-icons": "bun scripts/svg-to-icon.js"
   },
   "dependencies": {
-    "electron-store": "^8.1.0",
     "electron-updater": "^6.8.3",
     "lucide-react": "^0.344.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.22.0",
-    "uuid": "^9.0.0"
+    "react-router-dom": "^6.22.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.16",
     "@types/react": "^18.2.55",
     "@types/react-dom": "^18.2.19",
-    "@types/uuid": "^9.0.7",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.17",
     "concurrently": "^8.2.2",

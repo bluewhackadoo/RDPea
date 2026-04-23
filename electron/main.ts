@@ -717,10 +717,16 @@ function setupAutoUpdater() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
-  // Beta builds should find other beta (pre-release) updates
-  if (app.getVersion().includes('beta')) {
+  // Set update channel based on version so each install only gets its own updates
+  const version = app.getVersion();
+  if (version.includes('alpha')) {
+    autoUpdater.channel = 'alpha';
+    autoUpdater.allowPrerelease = true;
+  } else if (version.includes('beta')) {
+    autoUpdater.channel = 'beta';
     autoUpdater.allowPrerelease = true;
   }
+  // Stable builds default to 'latest' channel — no changes needed
 
   autoUpdater.on('checking-for-update', () => {
     console.log('Checking for updates...');

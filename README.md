@@ -83,20 +83,19 @@ sudo snap install rdpea
 
 ### Prerequisites
 
-- Node.js 18+
-- npm or yarn
+- [Bun](https://bun.sh) (latest)
 - Windows 10/11, macOS, or Linux (no external RDP dependencies)
 
 ### Install
 
 ```bash
-npm install
+bun install
 ```
 
 ### Development
 
 ```bash
-npm run dev
+bun run electron:dev
 ```
 
 This starts both the Vite dev server and the Electron app with hot reload.
@@ -106,7 +105,7 @@ This starts both the Vite dev server and the Electron app with hot reload.
 To create distributable binaries for your platform:
 
 ```bash
-npm run electron:build
+bun run electron:build
 ```
 
 This produces platform-specific installers in the `release/` folder:
