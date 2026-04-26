@@ -289,7 +289,7 @@ jobs:
 
       - name: Publish to Snap Store
         run: |
-          SNAP=$(ls artifacts/*.snap 2>/dev/null | head -1)
+          SNAP=$(find artifacts -name '*.snap' -type f | head -1)
           if [ -z "$SNAP" ]; then
             echo "No snap found in artifacts"
             exit 1
