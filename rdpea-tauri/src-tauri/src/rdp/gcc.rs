@@ -313,10 +313,10 @@ impl ClientNetworkData {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        // Header: 8 bytes
+        // Header: 4 bytes (type + length)
         // Channel count: 4 bytes
         // Each channel: 12 bytes (8 name + 4 options)
-        let total_len = 8 + 4 + (self.channels.len() * 12);
+        let total_len = 4 + 4 + (self.channels.len() * 12);
         let mut result = Vec::with_capacity(total_len);
 
         // UserDataHeader: type (2 bytes) + length (2 bytes)
@@ -561,8 +561,8 @@ mod tests {
         let count = u32::from_le_bytes([encoded[4], encoded[5], encoded[6], encoded[7]]);
         assert_eq!(count, 3);
 
-        // Each channel is 12 bytes (8 name + 4 options)
-        let expected_len = 8 + 4 + (3 * 12); // header + channels
+        // 4 header + 4 channel count + 3 * 12 channel defs
+        let expected_len = 4 + 4 + (3 * 12);
         assert_eq!(encoded.len(), expected_len);
     }
 
@@ -572,7 +572,7 @@ mod tests {
         let server_data = vec![
             0x01, 0x0C, // Type: SC_CORE (0x0C01)
             0x08, 0x00, // Length: 8
-            0x01, 0x00, 0x00, 0x00, // Version: RDP 5.0
+            0x01, 0x00, 0x08, 0x00, // Version: RDP 5.0 = 0x00080001
         ];
 
         let block = ServerDataBlock::from_bytes(&server_data).unwrap();

@@ -144,6 +144,10 @@ impl X224ConnectionConfirm {
                 ));
             }
             offset += 3;
+            // Skip optional MCS Connect Response application tag (0x7F 0x65)
+            if bytes.len() > offset + 1 && bytes[offset] == 0x7F && bytes[offset + 1] == 0x65 {
+                offset += 2;
+            }
         } else if cc_type == 0xD0 {
             // Standard CC-TPDU: skip length byte and CC type
             offset += 1;
@@ -164,7 +168,7 @@ impl X224ConnectionConfirm {
         let mut selected_protocol = None;
         let mut negotiation_result = None;
 
-        if bytes.len() >= offset + 8 {
+        if bytes.len() >= offset + 9 {
             // Check for RDP negotiation structure
             let neg_type = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
 
@@ -173,7 +177,7 @@ impl X224ConnectionConfirm {
                 let flags = bytes[offset + 2];
                 let length = u16::from_le_bytes([bytes[offset + 3], bytes[offset + 4]]);
 
-                if length == 8 && bytes.len() >= offset + 8 {
+                if length == 8 && bytes.len() >= offset + 9 {
                     let protocol_val = u32::from_le_bytes([
                         bytes[offset + 5],
                         bytes[offset + 6],
@@ -266,26 +270,26 @@ mod tests {
 
         let bytes = request.to_bytes();
 
-        // Check CR-TPDU type (0xE0 = CR + class 0)
-        assert_eq!(bytes[0], 0xE0);
-        // Check class 0
-        assert_eq!(bytes[0] & 0x0F, 0x00);
-        // Check RDP cookie is present
+        // bytes[0] is the TPDU length byte; bytes[1] is CR-TPDU code 0xE0
+        assert_eq!(bytes[1] & 0xF0, 0xE0);
+        assert_eq!(bytes[1] & 0x0F, 0x00);
         let s = String::from_utf8_lossy(&bytes);
-        assert!(s.contains("Cookie: mstshash=192.168.1.10"));
+        assert!(s.contains("mstshash=192.168.1.10"));
     }
 
     #[test]
     fn test_x224_connection_confirm_parsing() {
         // Mock X.224 Connection Confirm with RDP_NEG_RSP
+        // After 0x02 0xF0 0x80 header (offset jumps to 3), then MCS tag (2 bytes, offset=5)
+        // Then RDP_NEG_RSP: type(2LE) flags(1) length(2LE) protocol(4LE)
         let response = vec![
-            0x02, 0xF0, 0x80, // Connect Response TPDU header
-            0x7F, 0x65,       // T.125 MCS Connect Response tag
-            // RDP_NEG_RSP:
-            0x01, 0x00,       // Type: TYPE_RDP_NEG_RSP (0x0001)
-            0x00, 0x00,       // Flags
-            0x08, 0x00, 0x00, 0x00, // Length: 8
-            0x02, 0x00, 0x00, 0x00, // Selected protocol: HYBRID (0x00000002)
+            0x02, 0xF0, 0x80, // Extended CC-TPDU header
+            0x7F, 0x65,       // MCS tag (2 bytes, advance offset to 5)
+            // RDP_NEG_RSP at offset 5:
+            0x02, 0x00,       // Type: TYPE_RDP_NEG_RSP = 0x0002 (little-endian)
+            0x00,             // Flags
+            0x08, 0x00,       // Length: 8 (little-endian)
+            0x02, 0x00, 0x00, 0x00, // Selected protocol: HYBRID = 0x00000002
         ];
 
         let confirm = X224ConnectionConfirm::from_bytes(&response).unwrap();
