@@ -135,6 +135,16 @@ impl SecurityLayer {
     pub fn encryption_enabled(&self) -> bool {
         self.encryption_method != EncryptionMethod::NONE && self.server_public_key.is_some()
     }
+
+    /// Get raw client random bytes
+    pub fn client_random(&self) -> &[u8; 32] {
+        &self.client_random
+    }
+
+    /// Get derived session keys (if available)
+    pub fn session_keys(&self) -> Option<&SessionKeys> {
+        self.session_keys.as_ref()
+    }
 }
 
 impl Default for SecurityLayer {

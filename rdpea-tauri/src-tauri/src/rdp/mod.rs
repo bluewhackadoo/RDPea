@@ -11,6 +11,7 @@ pub mod input;
 pub mod client;
 pub mod mcs;
 pub mod gcc;
+pub mod connection;
 
 pub use transport::{TpktFrame, RdpTransport};
 pub use protocol::{X224ConnectionRequest, X224ConnectionConfirm, Protocol, negotiate_protocol};
