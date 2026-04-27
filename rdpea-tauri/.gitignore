@@ -1,0 +1,6 @@
+# Rust build artifacts
+src-tauri/target/
+
+# Node / Bun
+node_modules/
+dist/
