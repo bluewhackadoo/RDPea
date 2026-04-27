@@ -104,8 +104,8 @@ export function SessionView() {
   const [showToolbar, setShowToolbar] = useState(true);
   const [toolbarHint, setToolbarHint] = useState(false);
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [debugMode, setDebugMode] = useState(false);
-  const [debugOpen, setDebugOpen] = useState(false);
+  const [debugMode, setDebugMode] = useState(true);
+  const [debugOpen, setDebugOpen] = useState(true);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
 
   // ── Frame rendering with requestAnimationFrame batching ─────────

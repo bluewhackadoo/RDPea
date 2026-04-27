@@ -574,12 +574,16 @@ fn forward_rdp_event(
             })).ok();
         }
         RdpEvent::Log { message } => {
+            eprintln!("[RDP:{}] {}", connection_id, message);
+            let payload = serde_json::json!({
+                "connectionId": connection_id,
+                "message": message,
+            });
             if let Some(win) = &window {
-                win.emit("rdp:debug-log", serde_json::json!({
-                    "connectionId": connection_id,
-                    "message": message,
-                })).ok();
+                win.emit("rdp:debug-log", &payload).ok();
             }
+            // Also broadcast to all windows so dashboard/console can show it
+            app.emit("rdp:debug-log", &payload).ok();
         }
     }
 

@@ -66,49 +66,46 @@ impl RdpClient {
         let connected_flag = self.connected.clone();
         let stop_flag = self.stop_flag.clone();
 
-        let emit = move |ev: RdpEvent| {
-            if let Some(ref h) = handler {
-                h(ev);
-            }
-        };
-
-        emit(RdpEvent::Log {
-            message: format!("Connecting to {}:{}...", config.host, config.port),
-        });
-
-        // Build the log closure for the connection driver
-        let emit2 = {
-            let handler2 = self.event_handler.clone();
-            move |msg: String| {
-                if let Some(ref h) = handler2 {
-                    h(RdpEvent::Log { message: msg });
-                }
-            }
-        };
-
-        // Run the real RDP handshake
-        let mut conn = match RdpConnection::establish(&config, &mut { emit2 }).await {
-            Ok(c) => c,
-            Err(e) => {
-                let msg = format!("Connection failed: {}", e);
-                emit(RdpEvent::Error { message: msg });
-                return Err(e);
-            }
-        };
-
-        *connected_flag.lock().unwrap() = true;
-        emit(RdpEvent::Connected {
-            width: config.width,
-            height: config.height,
-        });
+        eprintln!("[RDP] connect() called for {}:{}", config.host, config.port);
+        let _ = handler; // handler clone moved into handler3 below
 
         // Input channel so send_keyboard/send_mouse can inject PDUs
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         self.input_tx = Some(input_tx);
 
-        // Spawn the session loop
+        // Spawn connection + session loop in background so rdp_connect returns immediately
+        // (the session window JS needs time to load and register its event listeners)
         let handler3 = self.event_handler.clone();
         tokio::spawn(async move {
+            // Small delay to let the session window JS finish loading
+            tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+
+            // Log closure that emits to frontend AND stderr
+            let handler_log = handler3.clone();
+            let mut log_fn = |msg: String| {
+                eprintln!("[RDP] {}", msg);
+                if let Some(ref h) = handler_log {
+                    h(RdpEvent::Log { message: msg });
+                }
+            };
+
+            // Run the real RDP handshake
+            let mut conn = match RdpConnection::establish(&config, &mut log_fn).await {
+                Ok(c) => c,
+                Err(e) => {
+                    let msg = format!("Connection failed: {}", e);
+                    eprintln!("[RDP] {}", msg);
+                    if let Some(ref h) = handler3 { h(RdpEvent::Error { message: msg }); }
+                    *connected_flag.lock().unwrap() = false;
+                    return;
+                }
+            };
+
+            *connected_flag.lock().unwrap() = true;
+            if let Some(ref h) = handler3 {
+                h(RdpEvent::Connected { width: config.width, height: config.height });
+            }
+            eprintln!("[RDP] Active session established");
             loop {
                 if *stop_flag.lock().unwrap() { break; }
 
