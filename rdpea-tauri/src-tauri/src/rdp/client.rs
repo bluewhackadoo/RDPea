@@ -121,10 +121,8 @@ impl RdpClient {
 
                 // Drain any pending input PDUs first (non-blocking)
                 while let Ok(frame) = input_rx.try_recv() {
-                    if let Err(e) = conn.framed.write_all(&frame).await {
-                        if let Some(ref h) = handler3 {
-                            h(RdpEvent::Log { message: format!("Input send error: {}", e) });
-                        }
+                    if let Err(_) = conn.framed.write_all(&frame).await {
+                        break; // connection dead, stop draining
                     }
                 }
 
@@ -137,6 +135,7 @@ impl RdpClient {
                 let (action, payload) = match read_result {
                     Ok(Ok(pdu)) => pdu,
                     Ok(Err(e)) => {
+                        eprintln!("[RDP] Session read error: {}", e);
                         if let Some(ref h) = handler3 {
                             h(RdpEvent::Error { message: format!("Read error: {}", e) });
                             h(RdpEvent::Disconnected);
@@ -150,10 +149,13 @@ impl RdpClient {
                 let outputs = match conn.active_stage.process(&mut image, action, &payload) {
                     Ok(o) => o,
                     Err(e) => {
+                        eprintln!("[RDP] Protocol error: {}", e);
                         if let Some(ref h) = handler3 {
                             h(RdpEvent::Error { message: format!("Protocol error: {}", e) });
+                            h(RdpEvent::Disconnected);
                         }
-                        continue;
+                        *connected_flag.lock().unwrap() = false;
+                        break;
                     }
                 };
 
