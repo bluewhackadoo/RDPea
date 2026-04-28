@@ -115,14 +115,18 @@ impl RdpClient {
 
             // Decoded image buffer — updated by IronRDP on every bitmap update
             let mut image = DecodedImage::new(PixelFormat::RgbA32, w, h_px);
+            // Don't send input until activation sequence completes (first GraphicsUpdate)
+            let mut activated = false;
 
             loop {
                 if *stop_flag.lock().unwrap() { break; }
 
-                // Drain any pending input PDUs first (non-blocking)
-                while let Ok(frame) = input_rx.try_recv() {
-                    if let Err(_) = conn.framed.write_all(&frame).await {
-                        break; // connection dead, stop draining
+                // Drain any pending input PDUs (only after activation is done)
+                if activated {
+                    while let Ok(frame) = input_rx.try_recv() {
+                        if let Err(_) = conn.framed.write_all(&frame).await {
+                            break;
+                        }
                     }
                 }
 
@@ -165,6 +169,7 @@ impl RdpClient {
                             let _ = conn.framed.write_all(&frame).await;
                         }
                         ActiveStageOutput::GraphicsUpdate(_region) => {
+                            activated = true;
                             // Emit changed region as RGBA bitmap
                             let rects = vec![BitmapRectIpc {
                                 x: 0, y: 0,
