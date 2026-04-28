@@ -32,13 +32,15 @@ export function Dashboard() {
   const [showForm, setShowForm] = useState(false);
   const [editingConnection, setEditingConnection] = useState<RdpConnection | null>(null);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [debugGlobal, setDebugGlobal] = useState(false);
+  const [debugGlobal, setDebugGlobal] = useState(true);
   const [debugOpen, setDebugOpen] = useState(true);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const debugEndRef = useRef<HTMLDivElement>(null);
   const MAX_DEBUG_LINES = 500;
 
   useEffect(() => {
+    // Enable debug globally on startup so logs flow immediately
+    tauri.setDebugGlobal(true);
     tauri.getDebugGlobal().then(setDebugGlobal);
     const unsubGlobal = tauri.onDebugGlobal((enabled) => setDebugGlobal(enabled));
     const unsubLog = tauri.onDebugLog((_id, msg) => {

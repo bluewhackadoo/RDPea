@@ -3,8 +3,10 @@ mod storage;
 mod rdp;
 
 use commands::*;
+use tauri::Emitter;
 
 pub fn run() {
+    eprintln!("[RDPea] App starting — Rust backend v{}", env!("CARGO_PKG_VERSION"));
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(commands::AppState::default())
@@ -30,8 +32,13 @@ pub fn run() {
             hyperv_install_module,
             hyperv_start,
         ])
-        .setup(|_app| {
+        .setup(|app| {
             env_logger::init();
+            eprintln!("[RDPea] Tauri setup complete");
+            app.emit("rdp:debug-log", serde_json::json!({
+                "connectionId": "_system",
+                "message": format!("RDPea v{} started — Tauri backend ready", env!("CARGO_PKG_VERSION"))
+            })).ok();
             Ok(())
         })
         .run(tauri::generate_context!())
