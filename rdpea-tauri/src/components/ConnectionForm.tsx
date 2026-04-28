@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import {
   X, Save, Monitor, Globe, User, Lock, Shield, Volume2,
   Clipboard, HardDrive, Printer, Tag, FileText, Palette,
@@ -22,6 +22,63 @@ const PRESET_COLORS = [
 ];
 
 type TabName = 'general' | 'display' | 'resources' | 'hyperv' | 'gateway' | 'notes';
+
+interface ColorPickerProps {
+  colors: string[];
+  value: string;
+  onChange: (color: string) => void;
+}
+
+function ColorPicker({ colors, value, onChange }: ColorPickerProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const idx = colors.indexOf(value);
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      onChange(colors[(idx + 1) % colors.length]);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      onChange(colors[(idx - 1 + colors.length) % colors.length]);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      onChange(colors[0]);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      onChange(colors[colors.length - 1]);
+    }
+  }, [colors, value, onChange]);
+
+  return (
+    <div>
+      <label className="block text-xs font-medium text-surface-400 mb-1">
+        <Palette className="w-3 h-3 inline mr-1" /> Color
+      </label>
+      <div
+        ref={containerRef}
+        role="radiogroup"
+        aria-label="Connection color"
+        tabIndex={0}
+        onKeyDown={handleKeyDown}
+        className="flex gap-1.5 flex-wrap focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded p-1"
+      >
+        {colors.map((c) => (
+          <div
+            key={c}
+            role="radio"
+            aria-checked={value === c}
+            tabIndex={-1}
+            onClick={() => onChange(c)}
+            className={`w-6 h-6 rounded-full cursor-pointer transition-transform ${
+              value === c ? 'scale-125 ring-2 ring-white/50' : 'hover:scale-110'
+            }`}
+            style={{ backgroundColor: c }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export function ConnectionForm({ connection, groups, onSave, onCancel }: ConnectionFormProps) {
   const [form, setForm] = useState<RdpConnection>(
@@ -106,37 +163,18 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {activeTab === 'general' && (
             <>
-              {/* Name & Color */}
-              <div className="flex gap-3">
-                <div className="flex-1">
-                  <label className="block text-xs font-medium text-surface-400 mb-1">
-                    <Monitor className="w-3 h-3 inline mr-1" /> Connection Name
-                  </label>
-                  <input
-                    type="text"
-                    value={form.name}
-                    onChange={(e) => update('name', e.target.value)}
-                    placeholder="My Server"
-                    className="input-field"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-surface-400 mb-1">
-                    <Palette className="w-3 h-3 inline mr-1" /> Color
-                  </label>
-                  <div className="flex gap-1 flex-wrap max-w-[140px]">
-                    {PRESET_COLORS.map((c) => (
-                      <button
-                        key={c}
-                        onClick={() => update('color', c)}
-                        className={`w-6 h-6 rounded-full transition-transform ${
-                          form.color === c ? 'scale-125 ring-2 ring-white/50' : 'hover:scale-110'
-                        }`}
-                        style={{ backgroundColor: c }}
-                      />
-                    ))}
-                  </div>
-                </div>
+              {/* Name */}
+              <div>
+                <label className="block text-xs font-medium text-surface-400 mb-1">
+                  <Monitor className="w-3 h-3 inline mr-1" /> Connection Name
+                </label>
+                <input
+                  type="text"
+                  value={form.name}
+                  onChange={(e) => update('name', e.target.value)}
+                  placeholder="My Server"
+                  className="input-field"
+                />
               </div>
 
               {/* Host & Port */}
@@ -281,6 +319,13 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
                   <button onClick={addTag} className="btn-ghost text-sm">Add</button>
                 </div>
               </div>
+
+              {/* Color — single tab stop, arrow-key navigation */}
+              <ColorPicker
+                colors={PRESET_COLORS}
+                value={form.color}
+                onChange={(c) => update('color', c)}
+              />
             </>
           )}
 

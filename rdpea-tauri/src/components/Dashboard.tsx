@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Monitor, Plus, Zap } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Monitor, Plus, Zap, Bug, ChevronDown, ChevronUp } from 'lucide-react';
 import { useConnections, createDefaultConnection } from '../hooks/useConnections';
 import { RdpConnection } from '../types';
 import { Sidebar } from './Sidebar';
@@ -32,6 +32,29 @@ export function Dashboard() {
   const [showForm, setShowForm] = useState(false);
   const [editingConnection, setEditingConnection] = useState<RdpConnection | null>(null);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [debugGlobal, setDebugGlobal] = useState(false);
+  const [debugOpen, setDebugOpen] = useState(true);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const debugEndRef = useRef<HTMLDivElement>(null);
+  const MAX_DEBUG_LINES = 500;
+
+  useEffect(() => {
+    tauri.getDebugGlobal().then(setDebugGlobal);
+    const unsubGlobal = tauri.onDebugGlobal((enabled) => setDebugGlobal(enabled));
+    const unsubLog = tauri.onDebugLog((_id, msg) => {
+      setDebugLogs(prev => {
+        const next = [...prev, msg];
+        return next.length > MAX_DEBUG_LINES ? next.slice(-MAX_DEBUG_LINES) : next;
+      });
+    });
+    return () => { unsubGlobal(); unsubLog(); };
+  }, []);
+
+  useEffect(() => {
+    if (debugOpen && debugEndRef.current) {
+      debugEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [debugLogs, debugOpen]);
 
   const showNotification = (message: string, type: 'success' | 'error' = 'success') => {
     setNotification({ message, type });
@@ -200,6 +223,43 @@ export function Dashboard() {
             : 'bg-emerald-600/90 border-emerald-500/50'
         } backdrop-blur-lg border rounded-lg px-4 py-2.5 text-sm text-white shadow-xl`}>
           {notification.message}
+        </div>
+      )}
+      {/* Debug log panel — shown at bottom when global debug is on */}
+      {debugGlobal && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-surface-950 border-t border-surface-700/50 shadow-2xl">
+          <div
+            className="flex items-center justify-between px-4 py-1.5 cursor-pointer select-none hover:bg-surface-900/60"
+            onClick={() => setDebugOpen(prev => !prev)}
+          >
+            <div className="flex items-center gap-2">
+              <Bug className="w-3 h-3 text-amber-400" />
+              <span className="text-xs font-medium text-surface-400">Debug Log</span>
+              <span className="text-xs text-surface-600">({debugLogs.length})</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={(e) => { e.stopPropagation(); setDebugLogs([]); }}
+                className="text-xs text-surface-500 hover:text-surface-300 px-1"
+              >
+                Clear
+              </button>
+              {debugOpen
+                ? <ChevronDown className="w-3 h-3 text-surface-500" />
+                : <ChevronUp className="w-3 h-3 text-surface-500" />}
+            </div>
+          </div>
+          {debugOpen && (
+            <div className="h-44 overflow-y-auto font-mono text-[10px] leading-4 text-surface-400 px-4 pb-2 scrollbar-thin">
+              {debugLogs.length === 0
+                ? <div className="text-surface-600 italic pt-1">Waiting for connection logs...</div>
+                : debugLogs.map((line, i) => (
+                  <div key={i} className={line.includes('failed') || line.includes('error') || line.includes('Error') ? 'text-red-400' : ''}>{line}</div>
+                ))
+              }
+              <div ref={debugEndRef} />
+            </div>
+          )}
         </div>
       )}
     </div>
