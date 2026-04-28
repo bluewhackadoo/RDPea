@@ -110,13 +110,18 @@ impl RdpConnection {
         let server_name = TlsServerName::try_from(config.host.clone())
             .map_err(|e| RdpError::Connection(format!("invalid server name: {}", e)))?;
 
-        // Extract raw TCP stream from framed (no leftover expected after connect_begin)
-        let (tcp_stream, _leftover) = framed.into_inner();
+        // Must have no leftover bytes — TLS handshake consumes raw TCP bytes directly
+        let tcp_stream = framed.into_inner_no_leftover();
 
-        let tls_stream = tls_connector
+        let mut tls_stream = tls_connector
             .connect(server_name, tcp_stream)
             .await
             .map_err(|e| RdpError::Connection(format!("TLS upgrade failed: {}", e)))?;
+
+        // Flush to drive handshake to completion so peer cert is available
+        use tokio::io::AsyncWriteExt as _;
+        tls_stream.flush().await
+            .map_err(|e| RdpError::Connection(format!("TLS flush failed: {}", e)))?;
         log("TLS established".into());
 
         // ── 5. Extract server public key from peer cert (for CredSSP) ─────────
