@@ -4,8 +4,10 @@ mod rdp;
 
 use commands::*;
 use tauri::Emitter;
+use rustls;
 
 pub fn run() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     eprintln!("[RDPea] App starting — Rust backend v{}", env!("CARGO_PKG_VERSION"));
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
