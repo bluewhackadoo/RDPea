@@ -4,6 +4,10 @@ use crate::rdp::connection::RdpConnection;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use thiserror::Error;
+use ironrdp::session::ActiveStageOutput;
+use ironrdp::session::image::DecodedImage;
+use ironrdp_graphics::image_processing::PixelFormat;
+use ironrdp_tokio::{FramedRead as _, FramedWrite as _};
 
 #[derive(Error, Debug)]
 pub enum RdpError {
@@ -102,41 +106,81 @@ impl RdpClient {
             };
 
             *connected_flag.lock().unwrap() = true;
+            let w = conn.width;
+            let h_px = conn.height;
             if let Some(ref h) = handler3 {
-                h(RdpEvent::Connected { width: config.width, height: config.height });
+                h(RdpEvent::Connected { width: w as u32, height: h_px as u32 });
             }
             eprintln!("[RDP] Active session established");
+
+            // Decoded image buffer — updated by IronRDP on every bitmap update
+            let mut image = DecodedImage::new(PixelFormat::RgbA32, w, h_px);
+
             loop {
                 if *stop_flag.lock().unwrap() { break; }
 
                 // Drain any pending input PDUs first (non-blocking)
-                while let Ok(pdu) = input_rx.try_recv() {
-                    if let Err(e) = conn.send_io(&pdu).await {
+                while let Ok(frame) = input_rx.try_recv() {
+                    if let Err(e) = conn.framed.write_all(&frame).await {
                         if let Some(ref h) = handler3 {
                             h(RdpEvent::Log { message: format!("Input send error: {}", e) });
                         }
                     }
                 }
 
-                // Then receive one server PDU (with a short timeout to keep input responsive)
-                match tokio::time::timeout(
+                // Receive one PDU with short timeout so input stays responsive
+                let read_result = tokio::time::timeout(
                     tokio::time::Duration::from_millis(50),
-                    conn.recv_pdu()
-                ).await {
-                    Ok(Ok((channel_id, data))) => {
-                        if let Some(ev) = process_incoming(channel_id, &data, conn.io_channel_id) {
-                            if let Some(ref h) = handler3 { h(ev); }
-                        }
-                    }
+                    conn.framed.read_pdu()
+                ).await;
+
+                let (action, payload) = match read_result {
+                    Ok(Ok(pdu)) => pdu,
                     Ok(Err(e)) => {
                         if let Some(ref h) = handler3 {
-                            h(RdpEvent::Error { message: format!("Receive error: {}", e) });
+                            h(RdpEvent::Error { message: format!("Read error: {}", e) });
                             h(RdpEvent::Disconnected);
                         }
                         *connected_flag.lock().unwrap() = false;
                         break;
                     }
-                    Err(_) => {} // timeout — loop again to process input
+                    Err(_) => continue, // timeout — loop to drain input
+                };
+
+                let outputs = match conn.active_stage.process(&mut image, action, &payload) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        if let Some(ref h) = handler3 {
+                            h(RdpEvent::Error { message: format!("Protocol error: {}", e) });
+                        }
+                        continue;
+                    }
+                };
+
+                for output in outputs {
+                    match output {
+                        ActiveStageOutput::ResponseFrame(frame) => {
+                            let _ = conn.framed.write_all(&frame).await;
+                        }
+                        ActiveStageOutput::GraphicsUpdate(_region) => {
+                            // Emit changed region as RGBA bitmap
+                            let rects = vec![BitmapRectIpc {
+                                x: 0, y: 0,
+                                width: w,
+                                height: h_px,
+                                data: image.data().to_vec(),
+                            }];
+                            if let Some(ref h) = handler3 {
+                                h(RdpEvent::Bitmap { rects });
+                            }
+                        }
+                        ActiveStageOutput::Terminate(_) => {
+                            if let Some(ref h) = handler3 { h(RdpEvent::Disconnected); }
+                            *connected_flag.lock().unwrap() = false;
+                            return;
+                        }
+                        _ => {}
+                    }
                 }
             }
         });
@@ -176,201 +220,63 @@ impl RdpClient {
     }
 }
 
-/// Decode an incoming PDU from the active session and produce an RdpEvent if relevant.
-fn process_incoming(channel_id: u16, data: &[u8], io_channel: u16) -> Option<RdpEvent> {
-    if channel_id != io_channel {
-        return None;
-    }
-    if data.len() < 6 {
-        return None;
-    }
-
-    // Check for bitmap update (Share Data, PDUType2=UPDATE)
-    let pdu_type = u16::from_le_bytes([data[2], data[3]]) & 0x0F;
-    if pdu_type == PDU_TYPE_DATA && data.len() > 20 {
-        let pdu_type2 = data[18];
-        if pdu_type2 == PDU_TYPE2_UPDATE {
-            let rects = decode_bitmap_update(&data[20..]);
-            if !rects.is_empty() {
-                return Some(RdpEvent::Bitmap { rects });
-            }
-        }
-    }
-
-    None
-}
-
-/// Minimal bitmap update decoder (uncompressed rectangles)
-fn decode_bitmap_update(data: &[u8]) -> Vec<BitmapRectIpc> {
-    let mut rects = Vec::new();
-    if data.len() < 4 { return rects; }
-
-    let update_type = u16::from_le_bytes([data[0], data[1]]);
-    if update_type != UPDATE_TYPE_BITMAP { return rects; }
-
-    let num_rects = u16::from_le_bytes([data[2], data[3]]) as usize;
-    let mut pos = 4;
-
-    for _ in 0..num_rects {
-        if pos + 18 > data.len() { break; }
-        let dest_left   = u16::from_le_bytes([data[pos],   data[pos+1]]);
-        let dest_top    = u16::from_le_bytes([data[pos+2], data[pos+3]]);
-        let dest_right  = u16::from_le_bytes([data[pos+4], data[pos+5]]);
-        let dest_bottom = u16::from_le_bytes([data[pos+6], data[pos+7]]);
-        let width       = u16::from_le_bytes([data[pos+8], data[pos+9]]);
-        let height      = u16::from_le_bytes([data[pos+10],data[pos+11]]);
-        let bits_per_px = u16::from_le_bytes([data[pos+12],data[pos+13]]);
-        let flags       = u16::from_le_bytes([data[pos+14],data[pos+15]]);
-        let bmp_len     = u16::from_le_bytes([data[pos+16],data[pos+17]]) as usize;
-        pos += 18;
-
-        if pos + bmp_len > data.len() { break; }
-        let bmp_data = data[pos..pos + bmp_len].to_vec();
-        pos += bmp_len;
-
-        let rect_w = (dest_right - dest_left) as usize;
-        let rect_h = (dest_bottom - dest_top) as usize;
-
-        // Convert to RGBA (very simplified — treats data as-is for now)
-        let rgba = if flags & 0x0400 != 0 {
-            // Compressed — emit raw for now, frontend can handle
-            bmp_data
-        } else {
-            bmp_to_rgba(&bmp_data, width as usize, height as usize, bits_per_px)
-        };
-
-        rects.push(BitmapRectIpc {
-            x: dest_left,
-            y: dest_top,
-            width: rect_w as u16,
-            height: rect_h as u16,
-            data: rgba,
-        });
-    }
-
-    rects
-}
-
-/// Build a Slow-Path Keyboard Input PDU (TS_KEYBOARD_EVENT wrapped in Share Data)
+/// Build a keyboard fast-path input PDU using IronRDP.
 fn build_keyboard_pdu(event_type: &str, scan_code: u16, extended: bool) -> Vec<u8> {
-    let mut kbd_flags: u16 = 0;
-    if event_type == "keyup" { kbd_flags |= KBDFLAGS_RELEASE; }
-    if extended { kbd_flags |= KBDFLAGS_EXTENDED; }
+    use ironrdp::pdu::input::fast_path::{FastPathInput, FastPathInputEvent, KeyboardFlags};
+    use ironrdp::core::encode_vec;
 
-    // TS_INPUT_PDU_DATA -> TS_INPUT_EVENT -> TS_KEYBOARD_EVENT
-    // One input event: messageType(2) + numEvents(2) + pad(4) + event(6)
-    let mut events = Vec::new();
-    events.extend_from_slice(&0u32.to_le_bytes()); // eventTime (unused)
-    events.extend_from_slice(&INPUT_EVENT_SCANCODE.to_le_bytes());
-    events.extend_from_slice(&kbd_flags.to_le_bytes());
-    events.extend_from_slice(&scan_code.to_le_bytes());
+    let mut flags = KeyboardFlags::empty();
+    if event_type == "keyup" { flags |= KeyboardFlags::RELEASE; }
+    if extended { flags |= KeyboardFlags::EXTENDED; }
 
-    let num_events: u16 = 1;
-    let mut inner = Vec::new();
-    inner.extend_from_slice(&0u16.to_le_bytes()); // slow-path input type (unused for TS_INPUT_PDU)
-    inner.extend_from_slice(&num_events.to_le_bytes());
-    inner.extend_from_slice(&[0u8; 4]); // pad
-    inner.extend_from_slice(&events);
-
-    share_data_header_for_input(PDU_TYPE2_INPUT, inner.len() as u16, &inner)
+    let pdu = FastPathInput::single(FastPathInputEvent::KeyboardEvent(flags, scan_code as u8));
+    encode_vec(&pdu).unwrap_or_default()
 }
 
-/// Build a Slow-Path Mouse Input PDU (TS_POINTER_EVENT wrapped in Share Data)
+/// Build a mouse fast-path input PDU using IronRDP.
 fn build_mouse_pdu(
     event_type: &str,
     x: u16, y: u16,
     button: Option<&str>,
     wheel_delta: Option<i16>,
 ) -> Vec<u8> {
-    let mut ptr_flags: u16 = 0;
+    use ironrdp::pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
+    use ironrdp::pdu::input::mouse::{MousePdu, PointerFlags};
+    use ironrdp::core::encode_vec;
 
+    let mut flags = PointerFlags::empty();
     match event_type {
-        "mousemove" => { ptr_flags |= PTRFLAGS_MOVE; }
+        "mousemove" => { flags |= PointerFlags::MOVE; }
         "mousedown" => {
-            ptr_flags |= PTRFLAGS_DOWN;
-            ptr_flags |= match button {
-                Some("right")  => PTRFLAGS_BUTTON2,
-                Some("middle") => PTRFLAGS_BUTTON3,
-                _              => PTRFLAGS_BUTTON1,
+            flags |= PointerFlags::DOWN;
+            flags |= match button {
+                Some("right")  => PointerFlags::RIGHT_BUTTON,
+                Some("middle") => PointerFlags::MIDDLE_BUTTON_OR_WHEEL,
+                _              => PointerFlags::LEFT_BUTTON,
             };
         }
         "mouseup" => {
-            ptr_flags |= match button {
-                Some("right")  => PTRFLAGS_BUTTON2,
-                Some("middle") => PTRFLAGS_BUTTON3,
-                _              => PTRFLAGS_BUTTON1,
+            flags |= match button {
+                Some("right")  => PointerFlags::RIGHT_BUTTON,
+                Some("middle") => PointerFlags::MIDDLE_BUTTON_OR_WHEEL,
+                _              => PointerFlags::LEFT_BUTTON,
             };
         }
         "wheel" => {
-            ptr_flags |= PTRFLAGS_WHEEL;
+            flags |= PointerFlags::VERTICAL_WHEEL;
             if let Some(delta) = wheel_delta {
-                if delta < 0 { ptr_flags |= PTRFLAGS_WHEEL_NEGATIVE; }
-                ptr_flags |= (delta.unsigned_abs() & 0x01FF) as u16;
+                if delta < 0 { flags |= PointerFlags::WHEEL_NEGATIVE; }
             }
         }
         _ => {}
     }
 
-    let mut events = Vec::new();
-    events.extend_from_slice(&0u32.to_le_bytes()); // eventTime
-    events.extend_from_slice(&INPUT_EVENT_MOUSE.to_le_bytes());
-    events.extend_from_slice(&ptr_flags.to_le_bytes());
-    events.extend_from_slice(&x.to_le_bytes());
-    events.extend_from_slice(&y.to_le_bytes());
-
-    let num_events: u16 = 1;
-    let mut inner = Vec::new();
-    inner.extend_from_slice(&0u16.to_le_bytes());
-    inner.extend_from_slice(&num_events.to_le_bytes());
-    inner.extend_from_slice(&[0u8; 4]);
-    inner.extend_from_slice(&events);
-
-    share_data_header_for_input(PDU_TYPE2_INPUT, inner.len() as u16, &inner)
+    let pdu = FastPathInput::single(FastPathInputEvent::MouseEvent(MousePdu {
+        flags,
+        number_of_wheel_rotation_units: wheel_delta.unwrap_or(0),
+        x_position: x,
+        y_position: y,
+    }));
+    encode_vec(&pdu).unwrap_or_default()
 }
 
-fn share_data_header_for_input(pdu_type2: u8, data_len: u16, data: &[u8]) -> Vec<u8> {
-    let total = 6u16 + 14 + data_len;
-    let mut h = Vec::new();
-    h.extend_from_slice(&total.to_le_bytes());
-    h.extend_from_slice(&PDU_TYPE_DATA.to_le_bytes());
-    h.extend_from_slice(&0u16.to_le_bytes());
-    // Share Data Header
-    h.extend_from_slice(&0x1003EAu32.to_le_bytes());
-    h.push(0x00); h.push(0x01);
-    h.extend_from_slice(&(14u16 + data_len).to_le_bytes());
-    h.push(pdu_type2);
-    h.push(0x00);
-    h.extend_from_slice(&0u16.to_le_bytes());
-    h.extend_from_slice(data);
-    h
-}
-
-fn bmp_to_rgba(data: &[u8], width: usize, height: usize, bpp: u16) -> Vec<u8> {
-    let mut rgba = Vec::with_capacity(width * height * 4);
-    let bytes_per_pixel = (bpp / 8) as usize;
-    // RDP bitmaps are bottom-up
-    for row in (0..height).rev() {
-        let row_start = row * width * bytes_per_pixel;
-        let row_end = row_start + width * bytes_per_pixel;
-        if row_end > data.len() { break; }
-        for chunk in data[row_start..row_end].chunks(bytes_per_pixel) {
-            let (r, g, b) = match bpp {
-                32 => (chunk.get(2).copied().unwrap_or(0),
-                       chunk.get(1).copied().unwrap_or(0),
-                       chunk.get(0).copied().unwrap_or(0)),
-                24 => (chunk.get(2).copied().unwrap_or(0),
-                       chunk.get(1).copied().unwrap_or(0),
-                       chunk.get(0).copied().unwrap_or(0)),
-                16 => {
-                    let px = u16::from_le_bytes([chunk[0], chunk.get(1).copied().unwrap_or(0)]);
-                    ((px >> 11 & 0x1F) as u8 * 8,
-                     (px >> 5 & 0x3F) as u8 * 4,
-                     (px & 0x1F) as u8 * 8)
-                }
-                _ => (0, 0, 0),
-            };
-            rgba.extend_from_slice(&[r, g, b, 255]);
-        }
-    }
-    rgba
-}
