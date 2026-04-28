@@ -5,6 +5,7 @@ use crate::rdp::client::RdpError;
 use tokio::net::TcpStream;
 use tokio_native_tls::TlsStream;
 use std::io::Cursor;
+use native_tls;
 
 /// TPKT (RFC 2126) frame structure
 /// Version (1) | Reserved (1) | Length (2) | Payload (variable)
@@ -91,6 +92,7 @@ impl TpktFrame {
 pub struct RdpTransport {
     stream: Option<RdpStream>,
     read_buffer: Vec<u8>,
+    hostname: String,
 }
 
 /// Enum to hold either plain TCP or TLS-wrapped stream
@@ -147,25 +149,37 @@ impl RdpTransport {
             .await
             .map_err(|e| RdpError::Connection(format!("TCP connect failed: {}", e)))?;
 
-        // Start with plain TCP stream, TLS upgraded later via upgrade_tls()
         Ok(Self {
             stream: Some(RdpStream::Plain(tcp_stream)),
             read_buffer: Vec::with_capacity(65535),
+            hostname: host.to_string(),
         })
     }
 
-    /// Upgrade TCP connection to TLS
+    /// Upgrade TCP connection to TLS (required after X.224 SSL/NLA negotiation)
     pub async fn upgrade_tls(&mut self) -> Result<(), RdpError> {
-        // This is a placeholder - actual TLS upgrade requires:
-        // 1. Create native_tls::TlsConnector with DangerousAcceptDangerous::danger_accept_invalid_certs(true)
-        // 2. Get the underlying TCP stream from current TLS stream (which is actually plain TCP)
-        // 3. Connect with tokio_native_tls::TlsConnector::from(connector).connect(domain, tcp_stream).await
-        //
-        // For now, we'll skip certificate validation for compatibility
-        // In production, you should verify certificates properly!
+        let tcp_stream = match self.stream.take() {
+            Some(RdpStream::Plain(s)) => s,
+            Some(other) => {
+                self.stream = Some(other);
+                return Ok(()); // already TLS
+            }
+            None => return Err(RdpError::Connection("Not connected".to_string())),
+        };
 
-        // Extract host from connection (would need to store it)
-        // For now, this is a no-op since we start with TLS stream wrapper
+        let connector = native_tls::TlsConnector::builder()
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .map_err(|e| RdpError::Connection(format!("TLS connector build failed: {}", e)))?;
+
+        let async_connector = tokio_native_tls::TlsConnector::from(connector);
+        let tls_stream = async_connector
+            .connect(&self.hostname, tcp_stream)
+            .await
+            .map_err(|e| RdpError::Connection(format!("TLS handshake failed: {}", e)))?;
+
+        self.stream = Some(RdpStream::Tls(tls_stream));
         Ok(())
     }
 
