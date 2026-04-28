@@ -11,6 +11,7 @@ use crate::rdp::gcc::{
 };
 use crate::rdp::security::{SecurityLayer, rsa_encrypt, rc4_encrypt, calculate_mac};
 use crate::rdp::types::*;
+use crate::rdp::ntlm::{NtlmAuth, NtlmCredentials, build_ts_request, parse_ts_request, build_ts_credentials};
 
 /// Full RDP session state
 pub struct RdpConnection {
@@ -60,7 +61,14 @@ impl RdpConnection {
             log("TLS established".into());
         }
 
-        // ── Phase 3: MCS Connect Initial ──────────────────────────────────────
+        // ── Phase 3: NLA/CredSSP (if Hybrid negotiated) ───────────────────────
+        if negotiated == Protocol::Hybrid || negotiated == Protocol::HybridEx {
+            log("NLA: Starting CredSSP authentication...".into());
+            perform_nla(&mut transport, config, log).await?;
+            log("NLA: Authentication complete".into());
+        }
+
+        // ── Phase 4: MCS Connect Initial ──────────────────────────────────────
         log("MCS handshake...".into());
         let client_data = build_client_core_data(config);
         let mcs_ci = McsConnectInitial::new(&client_data);
@@ -202,6 +210,198 @@ impl RdpConnection {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/// Perform the 3-step CredSSP/NLA handshake over the TLS-upgraded transport.
+/// Translated from electron/rdp/client.ts handleX224Confirm / onCredSSP.
+async fn perform_nla(
+    transport: &mut RdpTransport,
+    config: &RdpClientConfig,
+    log: &mut impl FnMut(String),
+) -> Result<(), RdpError> {
+    let mut ntlm = NtlmAuth::new(NtlmCredentials {
+        username: config.username.clone(),
+        password: config.password.clone(),
+        domain: config.domain.clone(),
+    });
+
+    // Step 1: send NTLM Negotiate in TSRequest
+    log("NLA: Sending NTLM Negotiate (Type 1)".into());
+    let nego_msg = ntlm.create_negotiate_message();
+    let ts_req = build_ts_request(6, Some(&nego_msg), None, None, None);
+    transport.send_raw(&ts_req).await?;
+
+    // Step 2: receive Challenge, send Authenticate + pubKeyAuth
+    log("NLA: Waiting for NTLM Challenge (Type 2)".into());
+    let ts_resp_raw = transport.recv_credssp().await?;
+    let ts_resp = parse_ts_request(&ts_resp_raw)
+        .map_err(|e| RdpError::Protocol(format!("NLA TSRequest parse: {}", e)))?;
+
+    if let Some(code) = ts_resp.error_code {
+        return Err(RdpError::Protocol(format!("NLA server error: 0x{:08X}", code)));
+    }
+
+    let challenge_token = ts_resp.nego_token
+        .ok_or_else(|| RdpError::Protocol("NLA: No challenge token in TSRequest".into()))?;
+
+    let challenge = ntlm.parse_challenge_message(&challenge_token)
+        .map_err(|e| RdpError::Protocol(format!("NLA challenge parse: {}", e)))?;
+    log(format!("NLA: Challenge received, target='{}'", challenge.target_name));
+
+    let auth_msg = ntlm.create_authenticate_message(&challenge)
+        .map_err(|e| RdpError::Protocol(format!("NLA auth message: {}", e)))?;
+    ntlm.initialize_sealing()
+        .map_err(|e| RdpError::Protocol(format!("NLA sealing init: {}", e)))?;
+
+    // Build pubKeyAuth: seal(SHA256(binding_hash)) for v5+, or seal(server_pub_key) for v2-4
+    let credssp_version = ts_resp.version;
+    let pub_key_auth;
+    let client_nonce;
+
+    if let Some(cert_der) = transport.get_peer_cert_der() {
+        // Extract raw RSA public key (PKCS#1) from X.509 DER for pubKeyAuth
+        let server_pub_key = extract_spki_from_x509(&cert_der)
+            .unwrap_or_else(|| cert_der.clone());
+
+        if credssp_version >= 5 {
+            let nonce = random_bytes_nla(32);
+            let binding_hash = sha256_concat(
+                b"CredSSP Client-To-Server Binding Hash\0",
+                &nonce,
+                &server_pub_key,
+            );
+            pub_key_auth = Some(ntlm.seal_message(&binding_hash)
+                .map_err(|e| RdpError::Protocol(format!("NLA seal pubKeyAuth: {}", e)))?);
+            client_nonce = Some(nonce);
+        } else {
+            pub_key_auth = Some(ntlm.seal_message(&server_pub_key)
+                .map_err(|e| RdpError::Protocol(format!("NLA seal pubKeyAuth: {}", e)))?);
+            client_nonce = None;
+        }
+    } else {
+        log("NLA: WARNING — no TLS peer cert, skipping pubKeyAuth".into());
+        pub_key_auth = None;
+        client_nonce = None;
+    }
+
+    log("NLA: Sending NTLM Authenticate (Type 3) + pubKeyAuth".into());
+    let ts_req2 = build_ts_request(
+        6,
+        Some(&auth_msg),
+        None,
+        pub_key_auth.as_deref(),
+        client_nonce.as_deref(),
+    );
+    transport.send_raw(&ts_req2).await?;
+
+    // Step 3: receive pubKeyAuth confirmation, send TSCredentials
+    log("NLA: Waiting for pubKeyAuth confirmation".into());
+    let ts_resp2_raw = transport.recv_credssp().await?;
+    let ts_resp2 = parse_ts_request(&ts_resp2_raw)
+        .map_err(|e| RdpError::Protocol(format!("NLA TSRequest2 parse: {}", e)))?;
+
+    if let Some(code) = ts_resp2.error_code {
+        return Err(RdpError::Protocol(format!("NLA auth failed: 0x{:08X}", code)));
+    }
+    if ts_resp2.pub_key_auth.is_none() {
+        return Err(RdpError::Protocol("NLA: Server did not confirm pubKeyAuth".into()));
+    }
+
+    log("NLA: Sending TSCredentials".into());
+    let ts_creds = build_ts_credentials(
+        &config.domain,
+        &config.username,
+        &config.password,
+    );
+    let enc_creds = ntlm.seal_message(&ts_creds)
+        .map_err(|e| RdpError::Protocol(format!("NLA seal creds: {}", e)))?;
+    let ts_req3 = build_ts_request(6, None, Some(&enc_creds), None, None);
+    transport.send_raw(&ts_req3).await?;
+
+    Ok(())
+}
+
+fn random_bytes_nla(n: usize) -> Vec<u8> {
+    use rand::RngCore;
+    let mut buf = vec![0u8; n];
+    rand::thread_rng().fill_bytes(&mut buf);
+    buf
+}
+
+fn sha256_concat(prefix: &[u8], nonce: &[u8], key: &[u8]) -> Vec<u8> {
+    use sha2::{Sha256, Digest};
+    let mut h = Sha256::new();
+    h.update(prefix);
+    h.update(nonce);
+    h.update(key);
+    h.finalize().to_vec()
+}
+
+/// Extract SubjectPublicKeyInfo (SPKI) PKCS#1 RSA key from a raw X.509 DER cert.
+/// Returns the raw RSA public key bytes (the BIT STRING contents of SPKI).
+fn extract_spki_from_x509(cert_der: &[u8]) -> Option<Vec<u8>> {
+    // X.509 DER: SEQUENCE { SEQUENCE { version, serial, ... SubjectPublicKeyInfo... } }
+    // SubjectPublicKeyInfo: SEQUENCE { AlgorithmIdentifier, BIT STRING }
+    // We walk the outer SEQUENCE to find the TBSCertificate, then find SPKI.
+    // Minimal DER walker — find the last SEQUENCE that contains a BIT STRING.
+    fn skip_tag_len(data: &[u8]) -> Option<(usize, usize)> {
+        if data.len() < 2 { return None; }
+        let hdr = if data[1] < 0x80 { 2usize }
+            else if data[1] == 0x81 { 3 }
+            else if data[1] == 0x82 { 4 }
+            else { return None; };
+        let len = match data[1] {
+            b if b < 0x80 => b as usize,
+            0x81 => *data.get(2)? as usize,
+            0x82 => ((*data.get(2)? as usize) << 8) | (*data.get(3)? as usize),
+            _ => return None,
+        };
+        Some((hdr, len))
+    }
+
+    // Walk DER looking for SEQUENCE containing BIT STRING (0x03)
+    fn find_spki(data: &[u8]) -> Option<Vec<u8>> {
+        let mut pos = 0;
+        while pos < data.len() {
+            let tag = data[pos];
+            let (hdr, len) = skip_tag_len(&data[pos..])?;
+            let content = data.get(pos + hdr..pos + hdr + len)?;
+            if tag == 0x30 {
+                // SEQUENCE — check if it directly contains a BIT STRING
+                if let Some(bs) = find_bitstring_in_seq(content) {
+                    return Some(bs);
+                }
+                // Recurse
+                if let Some(found) = find_spki(content) {
+                    return Some(found);
+                }
+            }
+            pos += hdr + len;
+        }
+        None
+    }
+
+    fn find_bitstring_in_seq(data: &[u8]) -> Option<Vec<u8>> {
+        // SEQUENCE { AlgorithmIdentifier(SEQUENCE), BIT STRING }
+        let mut pos = 0;
+        let mut saw_seq = false;
+        while pos < data.len() {
+            let tag = data[pos];
+            let (hdr, len) = skip_tag_len(&data[pos..])?;
+            if tag == 0x30 { saw_seq = true; }
+            if tag == 0x03 && saw_seq {
+                // BIT STRING — skip first byte (unused bits)
+                let bs = data.get(pos + hdr..pos + hdr + len)?;
+                if bs.len() > 1 {
+                    return Some(bs[1..].to_vec());
+                }
+            }
+            pos += hdr + len;
+        }
+        None
+    }
+
+    find_spki(cert_der)
+}
 
 fn build_client_core_data(config: &RdpClientConfig) -> ClientCoreData {
     let mut data = ClientCoreData::default();

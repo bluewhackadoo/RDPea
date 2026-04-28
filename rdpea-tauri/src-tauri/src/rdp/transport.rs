@@ -253,6 +253,93 @@ impl RdpTransport {
         Ok(frame)
     }
 
+    /// Send raw bytes directly (no TPKT framing) — used for CredSSP TSRequest
+    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), RdpError> {
+        let stream = self.stream.as_mut()
+            .ok_or_else(|| RdpError::Connection("Not connected".to_string()))?;
+        tokio::io::AsyncWriteExt::write_all(stream, data)
+            .await
+            .map_err(|e| RdpError::Connection(format!("Write failed: {}", e)))?;
+        tokio::io::AsyncWriteExt::flush(stream)
+            .await
+            .map_err(|e| RdpError::Connection(format!("Flush failed: {}", e)))?;
+        Ok(())
+    }
+
+    /// Receive a CredSSP/ASN.1 packet (starts with 0x30, BER-length prefixed)
+    pub async fn recv_credssp(&mut self) -> Result<Vec<u8>, RdpError> {
+        let stream = self.stream.as_mut()
+            .ok_or_else(|| RdpError::Connection("Not connected".to_string()))?;
+
+        // Read at least 4 bytes to determine length
+        while self.read_buffer.len() < 4 {
+            let mut tmp = [0u8; 1024];
+            let n = tokio::io::AsyncReadExt::read(stream, &mut tmp)
+                .await
+                .map_err(|e| RdpError::Connection(format!("Read failed: {}", e)))?;
+            if n == 0 { return Err(RdpError::Connection("Connection closed".into())); }
+            self.read_buffer.extend_from_slice(&tmp[..n]);
+        }
+
+        // Parse BER length
+        if self.read_buffer[0] != 0x30 {
+            return Err(RdpError::Protocol(format!(
+                "recv_credssp: expected 0x30, got 0x{:02X}", self.read_buffer[0]
+            )));
+        }
+        let (content_len, hdr_len) = {
+            let b = self.read_buffer[1];
+            if b < 0x80 {
+                (b as usize, 2)
+            } else if b == 0x81 {
+                while self.read_buffer.len() < 3 {
+                    let mut tmp = [0u8; 256];
+                    let n = tokio::io::AsyncReadExt::read(stream, &mut tmp).await
+                        .map_err(|e| RdpError::Connection(format!("Read failed: {}", e)))?;
+                    if n == 0 { return Err(RdpError::Connection("Connection closed".into())); }
+                    self.read_buffer.extend_from_slice(&tmp[..n]);
+                }
+                (self.read_buffer[2] as usize, 3)
+            } else if b == 0x82 {
+                while self.read_buffer.len() < 4 {
+                    let mut tmp = [0u8; 256];
+                    let n = tokio::io::AsyncReadExt::read(stream, &mut tmp).await
+                        .map_err(|e| RdpError::Connection(format!("Read failed: {}", e)))?;
+                    if n == 0 { return Err(RdpError::Connection("Connection closed".into())); }
+                    self.read_buffer.extend_from_slice(&tmp[..n]);
+                }
+                (((self.read_buffer[2] as usize) << 8) | self.read_buffer[3] as usize, 4)
+            } else {
+                return Err(RdpError::Protocol(format!("recv_credssp: bad BER length byte 0x{:02X}", b)));
+            }
+        };
+
+        let total = hdr_len + content_len;
+        while self.read_buffer.len() < total {
+            let mut tmp = [0u8; 4096];
+            let n = tokio::io::AsyncReadExt::read(stream, &mut tmp)
+                .await
+                .map_err(|e| RdpError::Connection(format!("Read failed: {}", e)))?;
+            if n == 0 { return Err(RdpError::Connection("Connection closed".into())); }
+            self.read_buffer.extend_from_slice(&tmp[..n]);
+        }
+
+        let packet = self.read_buffer[..total].to_vec();
+        self.read_buffer.drain(0..total);
+        Ok(packet)
+    }
+
+    /// Extract server certificate DER bytes (for CredSSP pubKeyAuth)
+    pub fn get_peer_cert_der(&self) -> Option<Vec<u8>> {
+        match &self.stream {
+            Some(RdpStream::Tls(s)) => {
+                s.get_ref().peer_certificate().ok()??
+                    .to_der().ok()
+            }
+            _ => None,
+        }
+    }
+
     /// Close the connection
     pub async fn close(&mut self) -> Result<(), RdpError> {
         if let Some(mut stream) = self.stream.take() {
