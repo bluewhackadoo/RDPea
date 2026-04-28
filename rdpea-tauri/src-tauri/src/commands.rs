@@ -135,6 +135,12 @@ pub async fn rdp_connect(
     let conn_id = connection.id.clone();
     let conn_name = connection.name.clone();
 
+    eprintln!("[RDP] rdp_connect invoked: id={} host={}", conn_id, connection.host);
+    app.emit("rdp:debug-log", serde_json::json!({
+        "connectionId": conn_id,
+        "message": format!("rdp_connect: {}@{}:{}", connection.username.as_deref().unwrap_or(""), connection.host, connection.port.unwrap_or(3389))
+    })).ok();
+
     // Check for existing connection
     {
         let clients = state.rdp_clients.lock().map_err(|e| e.to_string())?;

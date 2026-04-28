@@ -63,8 +63,10 @@ export const tauri = {
     invoke('save_connections', { connections }),
 
   // RDP session
-  connect: (connection: RdpConnection): Promise<{ success: boolean; error?: string }> =>
-    invoke('rdp_connect', { connection }),
+  connect: (connection: RdpConnection): Promise<{ success: boolean; error?: string }> => {
+    console.log('[tauri] rdp_connect invoke →', connection.id, connection.host, connection.port);
+    return invoke('rdp_connect', { connection });
+  },
   disconnect: (connectionId: string): Promise<boolean> =>
     invoke('rdp_disconnect', { connectionId }),
   getStatus: (connectionId: string): Promise<boolean> =>
