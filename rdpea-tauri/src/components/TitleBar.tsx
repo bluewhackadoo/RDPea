@@ -8,19 +8,19 @@ export function TitleBar() {
   const [appVersion, setAppVersion] = useState('');
 
   useEffect(() => {
-    window.rdpea?.getAppVersion().then((v: string) => setAppVersion(v));
+    tauri.getAppVersion().then((v: string) => setAppVersion(v));
   }, []);
 
   const handlePin = () => {
     const next = !isPinned;
     setIsPinned(next);
-    window.rdpea?.pin(next);
+    tauri.pin(next);
   };
 
   const handleDebugToggle = () => {
     const next = !debugGlobal;
     setDebugGlobal(next);
-    window.rdpea?.setDebugGlobal(next);
+    tauri.setDebugGlobal(next);
   };
 
   return (
@@ -60,21 +60,21 @@ export function TitleBar() {
         </button>
 
         <button
-          onClick={() => window.rdpea?.minimize()}
+          onClick={() => tauri.minimize()}
           className="p-1.5 rounded text-surface-400 hover:bg-surface-700 hover:text-surface-200 transition-colors"
         >
           <Minus className="w-3.5 h-3.5" />
         </button>
 
         <button
-          onClick={() => window.rdpea?.maximize()}
+          onClick={() => tauri.maximize()}
           className="p-1.5 rounded text-surface-400 hover:bg-surface-700 hover:text-surface-200 transition-colors"
         >
           <Square className="w-3 h-3" />
         </button>
 
         <button
-          onClick={() => window.rdpea?.close()}
+          onClick={() => tauri.close()}
           className="p-1.5 rounded text-surface-400 hover:bg-red-500/80 hover:text-white transition-colors"
         >
           <X className="w-3.5 h-3.5" />

@@ -72,7 +72,7 @@ export function Dashboard() {
   };
 
   const handleOpenWindow = (id: string, name: string) => {
-    window.rdpea?.openSessionWindow(id, name);
+    tauri.openSessionWindow(id, name);
   };
 
   if (isLoading) {

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { RdpConnection, ViewMode, SortField, SortDirection } from '../types';
-
 import { tauri } from '../lib/tauri';
+
 const CONNECTION_COLORS = [
   '#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981',
   '#06b6d4', '#f97316', '#6366f1', '#14b8a6', '#e11d48',
@@ -58,18 +58,16 @@ export function useConnections() {
   useEffect(() => {
     async function load() {
       try {
-        if (window.rdpea) {
-          const loaded = await tauri.loadConnections();
-          // Normalize: ensure older profiles have defaults for newer fields
-          const normalized = (loaded || []).map(c => {
-            if (c.captureWindowsKey === undefined) c.captureWindowsKey = false;
-            if (c.hyperVEnabled === undefined) c.hyperVEnabled = false;
-            if (c.hyperVHost === undefined) c.hyperVHost = '';
-            if (c.hyperVVmName === undefined) c.hyperVVmName = '';
-            return c;
-          });
-          setConnections(normalized);
-        }
+        const loaded = await tauri.loadConnections();
+        // Normalize: ensure older profiles have defaults for newer fields
+        const normalized = (loaded || []).map(c => {
+          if (c.captureWindowsKey === undefined) c.captureWindowsKey = false;
+          if (c.hyperVEnabled === undefined) c.hyperVEnabled = false;
+          if (c.hyperVHost === undefined) c.hyperVHost = '';
+          if (c.hyperVVmName === undefined) c.hyperVVmName = '';
+          return c;
+        });
+        setConnections(normalized);
       } catch (e) {
         console.error('Failed to load connections:', e);
       } finally {
@@ -81,7 +79,6 @@ export function useConnections() {
 
   // Listen for disconnection events
   useEffect(() => {
-    if (!window.rdpea) return;
     const unsub = tauri.onDisconnected((connectionId: string) => {
       setActiveConnections((prev) => {
         const next = new Set(prev);
@@ -96,9 +93,7 @@ export function useConnections() {
   const persistConnections = useCallback((conns: RdpConnection[]) => {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
-      if (window.rdpea) {
-        tauri.saveConnections(conns);
-      }
+      tauri.saveConnections(conns).catch(e => console.error('Failed to save connections:', e));
     }, 500);
   }, []);
 
@@ -145,7 +140,7 @@ export function useConnections() {
 
   const connectTo = useCallback(async (id: string) => {
     const conn = connections.find((c) => c.id === id);
-    if (!conn || !window.rdpea) return;
+    if (!conn) return;
 
     const result = await tauri.connect(conn);
     if (result.success) {
@@ -156,7 +151,6 @@ export function useConnections() {
   }, [connections, updateConnection]);
 
   const disconnectFrom = useCallback(async (id: string) => {
-    if (!window.rdpea) return;
     await tauri.disconnect(id);
     setActiveConnections((prev) => {
       const next = new Set(prev);

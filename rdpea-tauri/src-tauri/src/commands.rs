@@ -97,8 +97,13 @@ pub fn window_maximize(window: WebviewWindow) {
 }
 
 #[tauri::command]
-pub fn window_close(window: WebviewWindow) {
+pub fn window_close(window: WebviewWindow, app: AppHandle) {
+    // If this is the main window, exit the whole process
+    let label = window.label().to_string();
     window.close().ok();
+    if label == "main" {
+        app.exit(0);
+    }
 }
 
 #[tauri::command]

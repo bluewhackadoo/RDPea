@@ -128,7 +128,7 @@ export function UpdateNotification() {
                 <div className="text-xs text-slate-400">
                   v{status.version} will install on{' '}
                   <button
-                    onClick={() => window.rdpea?.restartAndInstall()}
+                    onClick={() => tauri.restartAndInstall()}
                     className="text-blue-400 hover:text-blue-300 underline underline-offset-2 cursor-pointer"
                   >
                     restart

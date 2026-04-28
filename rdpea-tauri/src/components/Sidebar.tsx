@@ -131,7 +131,7 @@ export function Sidebar({
           New Connection
         </button>
         <button
-          onClick={() => window.rdpea?.checkForUpdates()}
+          onClick={() => tauri.checkForUpdates()}
           className="w-full flex items-center justify-center gap-2 text-xs text-surface-400 hover:text-surface-200 hover:bg-surface-800 rounded-lg py-1.5 transition-colors"
         >
           <RefreshCw className="w-3.5 h-3.5" />
