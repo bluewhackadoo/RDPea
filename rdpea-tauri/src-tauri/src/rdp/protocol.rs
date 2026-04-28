@@ -50,7 +50,7 @@ impl X224ConnectionRequest {
 
     /// Add RDP cookie with hostname
     pub fn with_rdp_cookie(mut self, hostname: &str) -> Self {
-        self.cookie = Some(format!("mstshash={}\r\n", hostname));
+        self.cookie = Some(format!("Cookie: mstshash={}\r\n", hostname));
         self
     }
 
@@ -104,10 +104,10 @@ impl X224ConnectionRequest {
             result.extend_from_slice(&requested.to_le_bytes());
         }
 
-        // Calculate and prepend length
-        // The length includes the length byte itself
-        let length = result.len() + 1; // +1 for the length byte we're about to add
-        let mut final_result = vec![length as u8];
+        // LI (Length Indicator) = number of bytes after the LI byte itself
+        // i.e., result.len() (does NOT count the LI byte)
+        let li = result.len() as u8;
+        let mut final_result = vec![li];
         final_result.extend_from_slice(&result);
 
         final_result
@@ -121,7 +121,8 @@ impl Default for X224ConnectionRequest {
 }
 
 impl X224ConnectionConfirm {
-    /// Parse from bytes
+    /// Parse from bytes (TPKT payload = X.224 CC-TPDU, without TPKT header)
+    /// Layout: [LI(1)] [0xD0 CC code(1)] [DST-REF(2)] [SRC-REF(2)] [class(1)] [NEG_RSP(8, optional)]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, RdpError> {
         if bytes.len() < 7 {
             return Err(RdpError::Connection(format!(
@@ -130,95 +131,59 @@ impl X224ConnectionConfirm {
             )));
         }
 
-        let mut offset = 0;
-
-        // Check for X.224 CC-TPDU (0xD0 = Connection Confirm + class 0)
-        // Or the extended format 0x02 0xF0 0x80 used by RDP
-        let cc_type = bytes[offset];
-
-        if cc_type == 0x02 {
-            // Extended TPDU format: 0x02 0xF0 0x80
-            if bytes.len() < 3 || bytes[offset + 1] != 0xF0 || bytes[offset + 2] != 0x80 {
-                return Err(RdpError::Connection(
-                    "Invalid extended CC-TPDU format".to_string()
-                ));
-            }
-            offset += 3;
-            // Skip optional MCS Connect Response application tag (0x7F 0x65)
-            if bytes.len() > offset + 1 && bytes[offset] == 0x7F && bytes[offset + 1] == 0x65 {
-                offset += 2;
-            }
-        } else if cc_type == 0xD0 {
-            // Standard CC-TPDU: skip length byte and CC type
-            offset += 1;
-            // Skip destination reference (2 bytes)
-            offset += 2;
-            // Skip source reference (2 bytes)
-            offset += 2;
-            // Skip class (1 byte)
-            offset += 1;
-        } else {
+        // bytes[0] = LI (length indicator, does not count itself)
+        // bytes[1] = TPDU code: 0xD0 = CC (Connection Confirm)
+        let tpdu_code = bytes[1];
+        if tpdu_code != 0xD0 {
             return Err(RdpError::Connection(format!(
-                "Invalid CC-TPDU type: 0x{:02X} (expected 0xD0 or 0x02)",
-                cc_type
+                "Expected X.224 CC (0xD0), got 0x{:02X}", tpdu_code
             )));
         }
 
-        // Check for RDP_NEG_RSP or RDP_NEG_FAILURE
+        // Skip: LI(1) + code(1) + DST-REF(2) + SRC-REF(2) + class(1) = 7 bytes
+        let mut offset = 7;
+
         let mut selected_protocol = None;
         let mut negotiation_result = None;
 
-        if bytes.len() >= offset + 9 {
-            // Check for RDP negotiation structure
-            let neg_type = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        // Optional RDP_NEG_RSP or RDP_NEG_FAILURE (8 bytes each)
+        if bytes.len() >= offset + 8 {
+            let neg_type = bytes[offset];
+            let neg_flags = bytes[offset + 1];
+            // length at offset+2..+4 (LE u16), should be 8
+            let protocol_val = u32::from_le_bytes([
+                bytes[offset + 4],
+                bytes[offset + 5],
+                bytes[offset + 6],
+                bytes[offset + 7],
+            ]);
 
-            if neg_type == 0x0002 {
-                // TYPE_RDP_NEG_RSP
-                let flags = bytes[offset + 2];
-                let length = u16::from_le_bytes([bytes[offset + 3], bytes[offset + 4]]);
-
-                if length == 8 && bytes.len() >= offset + 9 {
-                    let protocol_val = u32::from_le_bytes([
-                        bytes[offset + 5],
-                        bytes[offset + 6],
-                        bytes[offset + 7],
-                        bytes[offset + 8],
-                    ]);
-
-                    selected_protocol = match protocol_val {
-                        0x00000000 => Some(Protocol::Rdp),
-                        0x00000001 => Some(Protocol::Ssl),
-                        0x00000002 => Some(Protocol::Hybrid),
-                        0x00000008 => Some(Protocol::HybridEx),
-                        _ => None,
-                    };
-
-                    negotiation_result = Some(flags);
-                    offset += length as usize;
+            match neg_type {
+                0x02 => {
+                    // TYPE_RDP_NEG_RSP
+                    selected_protocol = Some(match protocol_val {
+                        0x00000000 => Protocol::Rdp,
+                        0x00000001 => Protocol::Ssl,
+                        0x00000002 => Protocol::Hybrid,
+                        0x00000008 => Protocol::HybridEx,
+                        v => return Err(RdpError::Protocol(format!("Unknown negotiated protocol: 0x{:08X}", v))),
+                    });
+                    negotiation_result = Some(neg_flags);
                 }
-            } else if neg_type == 0x0003 {
-                // TYPE_RDP_NEG_FAILURE - negotiation failed
-                let failure_code = u32::from_le_bytes([
-                    bytes[offset + 5],
-                    bytes[offset + 6],
-                    bytes[offset + 7],
-                    bytes[offset + 8],
-                ]);
-
-                return Err(RdpError::Connection(format!(
-                    "RDP negotiation failed: code 0x{:08X}",
-                    failure_code
-                )));
+                0x03 => {
+                    // TYPE_RDP_NEG_FAILURE
+                    return Err(RdpError::Connection(format!(
+                        "RDP negotiation failed: code 0x{:08X}", protocol_val
+                    )));
+                }
+                _ => {} // no negotiation response, legacy server
             }
         }
-
-        // Remaining data is the MCS Connect Response
-        let response_data = bytes[offset..].to_vec();
 
         Ok(Self {
             selected_protocol,
             negotiation_result,
-            response_data,
+            response_data: vec![],
         })
     }
 
