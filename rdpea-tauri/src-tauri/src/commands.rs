@@ -39,7 +39,7 @@ pub struct ConnectionData {
     pub width: Option<u32>,
     pub height: Option<u32>,
     #[serde(rename = "audioMode")]
-    pub audio_mode: Option<u8>,
+    pub audio_mode: Option<String>,
     #[serde(rename = "redirectClipboard")]
     pub redirect_clipboard: Option<bool>,
     #[serde(rename = "hyperVEnabled")]
@@ -181,7 +181,7 @@ pub async fn rdp_connect(
         width: connection.width.unwrap_or(1920),
         height: connection.height.unwrap_or(1080),
         color_depth: 16,
-        enable_audio: connection.audio_mode.unwrap_or(0) != 2,
+        enable_audio: connection.audio_mode.as_deref().unwrap_or("local") != "none",
         enable_clipboard: connection.redirect_clipboard.unwrap_or(true),
         security: "any".to_string(),
     };
