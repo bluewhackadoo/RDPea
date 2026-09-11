@@ -62,11 +62,23 @@ contextBridge.exposeInMainWorld('rdpea', {
     ipcRenderer.on('rdp:audio', handler);
     return () => ipcRenderer.removeListener('rdp:audio', handler);
   },
-  onConnected: (callback: (connectionId: string, info?: { width: number; height: number }) => void) => {
-    const handler = (_event: any, connectionId: string, info?: { width: number; height: number }) => callback(connectionId, info);
+  onConnected: (callback: (connectionId: string, info?: { width: number; height: number; dynamicResize?: boolean }) => void) => {
+    const handler = (_event: any, connectionId: string, info?: { width: number; height: number; dynamicResize?: boolean }) => callback(connectionId, info);
     ipcRenderer.on('rdp:connected', handler);
     return () => ipcRenderer.removeListener('rdp:connected', handler);
   },
+  onResized: (callback: (connectionId: string, size: { width: number; height: number }) => void) => {
+    const handler = (_event: any, connectionId: string, size: { width: number; height: number }) => callback(connectionId, size);
+    ipcRenderer.on('rdp:resized', handler);
+    return () => ipcRenderer.removeListener('rdp:resized', handler);
+  },
+  onPointer: (callback: (connectionId: string, update: any) => void) => {
+    const handler = (_event: any, connectionId: string, update: any) => callback(connectionId, update);
+    ipcRenderer.on('rdp:pointer', handler);
+    return () => ipcRenderer.removeListener('rdp:pointer', handler);
+  },
+  requestResize: (connectionId: string, width: number, height: number) =>
+    ipcRenderer.invoke('rdp:resize', connectionId, width, height),
   onDisconnected: (callback: (connectionId: string) => void) => {
     const handler = (_event: any, connectionId: string) => callback(connectionId);
     ipcRenderer.on('rdp:disconnected', handler);

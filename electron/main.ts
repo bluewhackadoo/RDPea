@@ -4,7 +4,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import { autoUpdater } from 'electron-updater';
 import { exec } from 'child_process';
-import { RdpClient, RdpClientConfig } from './rdp';
+import { RdpClient, RdpClientConfig, PointerUpdate } from './rdp';
+import { installKeyHook, uninstallKeyHook, HookedKeyEvent } from './keyhook';
 
 const isDev = !app.isPackaged;
 
@@ -15,6 +16,56 @@ const rdpClients = new Map<string, RdpClient>();
 const clipboardPollers = new Map<string, ReturnType<typeof setInterval>>();
 const debugConnections = new Set<string>();
 const hyperVConnections = new Map<string, { host: string; vmName: string }>();
+// Per-connection: follow the session window's size with live desktop resizes (fitToWindow)
+const dynamicResizeConnections = new Set<string>();
+// The session window that currently has keyboard focus (null = none / main window)
+let focusedSessionId: string | null = null;
+// Per-connection: forward Win key / Alt+Tab / Ctrl+Esc / Alt+F4 to the remote instead of the host
+const captureSystemKeysConnections = new Set<string>();
+
+// ── System shortcut capture (Win, Alt+Tab, Alt+Esc, Alt+F4, Ctrl+Esc) ───────────────────
+const VK_TAB = 0x09, VK_ESCAPE = 0x1B, VK_SPACE = 0x20, VK_LWIN = 0x5B, VK_RWIN = 0x5C, VK_F4 = 0x73;
+const VK_LCONTROL = 0xA2, VK_RCONTROL = 0xA3;
+let ctrlHeld = false;
+// Keys we forwarded a key-down for through the hook, per connection — so we can also forward
+// the matching key-up and release them if focus is lost mid-press.
+const hookForwardedKeys = new Map<string, Map<number, { scanCode: number; extended: boolean }>>();
+
+function releaseHookForwardedKeys(connectionId: string): void {
+  const keys = hookForwardedKeys.get(connectionId);
+  if (!keys || keys.size === 0) return;
+  const client = rdpClients.get(connectionId);
+  for (const [, k] of keys) client?.sendKeyboard('keyup', k.scanCode, k.extended);
+  keys.clear();
+}
+
+function handleHookedKey(evt: HookedKeyEvent): boolean {
+  // Track Ctrl for Ctrl+Esc regardless of focus; never touch synthetic input
+  if (evt.vkCode === VK_LCONTROL || evt.vkCode === VK_RCONTROL) ctrlHeld = evt.down;
+  if (evt.injected) return false;
+
+  const id = focusedSessionId;
+  if (!id || !captureSystemKeysConnections.has(id)) return false;
+  const win = sessionWindows.get(id);
+  if (!win || win.isDestroyed() || !win.isFocused()) return false;
+  const client = rdpClients.get(id);
+  if (!client || !client.isConnected()) return false;
+
+  let forwarded = hookForwardedKeys.get(id);
+  if (!forwarded) { forwarded = new Map(); hookForwardedKeys.set(id, forwarded); }
+
+  const vk = evt.vkCode;
+  const isWinKey = vk === VK_LWIN || vk === VK_RWIN;
+  const isAltCombo = evt.altDown && (vk === VK_TAB || vk === VK_ESCAPE || vk === VK_F4 || vk === VK_SPACE);
+  const isCtrlEsc = ctrlHeld && vk === VK_ESCAPE;
+  const isPendingRelease = !evt.down && forwarded.has(vk);
+  if (!(isWinKey || isAltCombo || isCtrlEsc || isPendingRelease)) return false;
+
+  client.sendKeyboard(evt.down ? 'keydown' : 'keyup', evt.scanCode, evt.extended);
+  if (evt.down) forwarded.set(vk, { scanCode: evt.scanCode, extended: evt.extended });
+  else forwarded.delete(vk);
+  return true; // swallow locally
+}
 let lastKnownClipboardText = '';
 let debugGlobal = false;
 let hyperVNeedsElevation = false;
@@ -154,7 +205,15 @@ function createSessionWindow(connectionId: string, connectionName: string, rdpWi
     }
   });
 
+  sessionWin.on('focus', () => { focusedSessionId = connectionId; });
+  sessionWin.on('blur', () => {
+    if (focusedSessionId === connectionId) focusedSessionId = null;
+    releaseHookForwardedKeys(connectionId);
+  });
+
   sessionWin.on('closed', () => {
+    if (focusedSessionId === connectionId) focusedSessionId = null;
+    hookForwardedKeys.delete(connectionId);
     sessionWindows.delete(connectionId);
     terminateRdpClient(connectionId);
     // Notify main window so it updates connection status
@@ -481,13 +540,19 @@ async function launchRdpConnection(conn: any): Promise<{ success: boolean; error
 
     // Fit-to-window (default): negotiate the desktop at the window's exact physical pixel size so
     // frames render 1:1 with no scaling. On reconnect this adopts the window's current size.
+    if (conn.captureSystemKeys !== false) captureSystemKeysConnections.add(conn.id);
+    else captureSystemKeysConnections.delete(conn.id);
+
     if (conn.fitToWindow !== false) {
+      dynamicResizeConnections.add(conn.id);
       const fitted = measureSessionDesktopSize(conn.id);
       if (fitted) {
         console.log(`Fit-to-window: ${fitted.width}x${fitted.height} (profile ${config.width}x${config.height})`);
         config.width = fitted.width;
         config.height = fitted.height;
       }
+    } else {
+      dynamicResizeConnections.delete(conn.id);
     }
 
     const client = new RdpClient(config);
@@ -532,10 +597,46 @@ async function launchRdpConnection(conn: any): Promise<{ success: boolean; error
       }
     });
 
+    // Cursor shape changes → session window (renderer turns them into CSS cursors)
+    client.on('pointer', (upd: PointerUpdate) => {
+      const sessionWin = sessionWindows.get(conn.id);
+      if (!sessionWin || sessionWin.isDestroyed()) return;
+      if (upd.kind === 'new') {
+        const img = upd.image;
+        sessionWin.webContents.send('rdp:pointer', conn.id, {
+          kind: 'new',
+          cacheIndex: img.cacheIndex,
+          hotX: img.hotX, hotY: img.hotY,
+          width: img.width, height: img.height,
+          data: new Uint8Array(img.rgba.buffer, img.rgba.byteOffset, img.rgba.byteLength),
+        });
+      } else if (upd.kind !== 'position') {
+        sessionWin.webContents.send('rdp:pointer', conn.id, upd);
+      }
+    });
+
+    // Server re-activated at a new size (result of a Display Control resize request)
+    client.on('resize', (size: { width: number; height: number }) => {
+      sendDebugLog(conn.id, `[Display] Desktop resized to ${size.width}x${size.height}`);
+      const sessionWin = sessionWindows.get(conn.id);
+      if (sessionWin && !sessionWin.isDestroyed()) {
+        sessionWin.webContents.send('rdp:resized', conn.id, size);
+      }
+    });
+
+    client.on('displayControl', (available: boolean) => {
+      sendDebugLog(conn.id, `[Display] Dynamic resize ${available ? 'available' : 'unavailable'} (Display Control channel)`);
+    });
+
     client.on('ready', () => {
       const sessionWin = sessionWindows.get(conn.id);
       if (sessionWin && !sessionWin.isDestroyed()) {
-        sessionWin.webContents.send('rdp:connected', conn.id, { width: config.width, height: config.height });
+        const size = client.getDesktopSize();
+        sessionWin.webContents.send('rdp:connected', conn.id, {
+          width: size.width,
+          height: size.height,
+          dynamicResize: dynamicResizeConnections.has(conn.id),
+        });
       }
       mainWindow?.webContents.send('rdp:connected', conn.id);
 
@@ -655,6 +756,15 @@ function registerIpcHandlers() {
 
   ipcMain.handle('rdp:status', (_event, connectionId: string) => {
     return rdpClients.has(connectionId) && rdpClients.get(connectionId)!.isConnected();
+  });
+
+  // Session window changed size → ask the server for a matching desktop (fit-to-window only)
+  ipcMain.handle('rdp:resize', (_event, connectionId: string, width: number, height: number) => {
+    const client = rdpClients.get(connectionId);
+    if (!client || !client.isConnected() || !dynamicResizeConnections.has(connectionId)) return false;
+    const sent = client.requestDesktopResize(width, height);
+    if (!sent) sendDebugLog(connectionId, `[Display] Resize to ${width}x${height} deferred — server has not offered Display Control`);
+    return sent;
   });
 
   // Forward keyboard input from renderer to RDP client
@@ -854,6 +964,7 @@ app.whenReady().then(() => {
   registerIpcHandlers();
   createMainWindow();
   setupAutoUpdater();
+  installKeyHook(handleHookedKey);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
@@ -866,4 +977,8 @@ app.on('window-all-closed', () => {
     terminateRdpClient(id);
   }
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('will-quit', () => {
+  uninstallKeyHook();
 });

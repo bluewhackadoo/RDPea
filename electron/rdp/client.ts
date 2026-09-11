@@ -11,6 +11,8 @@ import * as bitmap from './bitmap';
 import * as input from './input';
 import * as audio from './audio';
 import * as clipboard from './clipboard';
+import * as pointer from './pointer';
+import * as dynvc from './dynvc';
 import * as types from './types';
 
 export interface RdpClientEvents {
@@ -19,6 +21,11 @@ export interface RdpClientEvents {
   bitmap: (rects: Array<{ x: number; y: number; width: number; height: number; data: Buffer }>) => void;
   audio: (pcmData: Buffer, format: types.AudioFormat) => void;
   clipboard: (text: string) => void;
+  pointer: (update: pointer.PointerUpdate) => void;
+  /** Server re-activated the session at a new desktop size (after a resize request). */
+  resize: (size: { width: number; height: number }) => void;
+  /** Whether the server exposes the Display Control channel (dynamic resize). */
+  displayControl: (available: boolean) => void;
   close: () => void;
   error: (err: Error) => void;
 }
@@ -39,6 +46,14 @@ export class RdpClient extends EventEmitter {
   private channelMap: Map<number, string> = new Map();
   private selectedProtocol = types.PROTOCOL_RDP;
   private connected = false;
+  // True between Demand Active and Deactivate All — input is only valid while activated
+  private activated = false;
+  private everActivated = false;
+  // Current desktop size as negotiated with the server (may change via Display Control)
+  private desktopWidth: number;
+  private desktopHeight: number;
+  private dynvcState = dynvc.createDynvcState();
+  private pendingResize: { width: number; height: number } | null = null;
   private phase: 'x224' | 'nla' | 'mcs' | 'security' | 'licensing' | 'active' | 'data' = 'x224';
 
   // NLA state
@@ -74,6 +89,8 @@ export class RdpClient extends EventEmitter {
     this.secState = security.createSecurityState();
     this.audioState = audio.createAudioState();
     this.clipState = clipboard.createClipboardState();
+    this.desktopWidth = config.width;
+    this.desktopHeight = config.height;
 
     // Set up virtual channels
     // rdpdr (device redirection) must be registered — Windows servers require it before enabling rdpsnd
@@ -84,6 +101,41 @@ export class RdpClient extends EventEmitter {
     if (config.enableClipboard) {
       this.channels.push({ name: types.CLIPRDR_CHANNEL_NAME, options: 0xC0A00000 });
     }
+    // Dynamic virtual channels — carries the Display Control channel used for live resize
+    this.channels.push({ name: dynvc.DRDYNVC_CHANNEL_NAME, options: 0xC0800000 });
+  }
+
+  /** Current negotiated desktop size. */
+  getDesktopSize(): { width: number; height: number } {
+    return { width: this.desktopWidth, height: this.desktopHeight };
+  }
+
+  /** True once the server has opened the Display Control channel (dynamic resize possible). */
+  supportsDynamicResize(): boolean {
+    return this.dynvcState.displayControl !== null;
+  }
+
+  /**
+   * Ask the server to change the desktop resolution (MS-RDPEDISP). Returns false if the
+   * server hasn't offered the Display Control channel; the request is then remembered and
+   * sent as soon as the channel becomes available.
+   */
+  requestDesktopResize(width: number, height: number): boolean {
+    const caps = this.dynvcState.displayControl;
+    const size = dynvc.normalizeDesktopSize(width, height, caps);
+    if (size.width === this.desktopWidth && size.height === this.desktopHeight && this.activated) {
+      this.pendingResize = null;
+      return true;
+    }
+    if (!caps) {
+      this.pendingResize = size;
+      return false;
+    }
+    this.pendingResize = null;
+    this.log(`Requesting desktop resize to ${size.width}x${size.height}`);
+    const pdus = dynvc.buildDynvcDataPdus(caps.channelId, dynvc.buildMonitorLayoutPdu(size.width, size.height));
+    for (const pdu of pdus) this.sendVirtualChannelData(dynvc.DRDYNVC_CHANNEL_NAME, pdu);
+    return true;
   }
 
   async connect(): Promise<void> {
@@ -629,7 +681,10 @@ export class RdpClient extends EventEmitter {
         this.handleDataPDU(share.payload);
         break;
       case types.PDUType.DEACTIVATE_ALL:
+        // Sent before the server re-negotiates the session (e.g. after our resize request).
+        // Input must pause until the next Demand Active.
         this.log('Received Deactivate All — waiting for re-activation');
+        this.activated = false;
         this.phase = 'active';
         break;
       default:
@@ -643,9 +698,19 @@ export class RdpClient extends EventEmitter {
     this.shareId = r.readUInt32LE();
     const lengthSourceDescriptor = r.readUInt16LE();
     const lengthCombinedCapabilities = r.readUInt16LE();
-    r.skip(lengthSourceDescriptor); // sourceDescriptor
-    // Skip server capabilities for now
-    r.skip(lengthCombinedCapabilities);
+    r.skip(Math.min(lengthSourceDescriptor, r.remaining)); // sourceDescriptor
+    const serverCaps = r.readBytes(Math.min(lengthCombinedCapabilities, r.remaining));
+
+    // The server's Bitmap capability carries the desktop size it has actually configured.
+    // After a Display Control resize this is where the new size arrives.
+    const serverSize = this.parseServerDesktopSize(serverCaps);
+    if (serverSize) {
+      if (serverSize.width !== this.desktopWidth || serverSize.height !== this.desktopHeight) {
+        this.log(`Server desktop size ${serverSize.width}x${serverSize.height} (was ${this.desktopWidth}x${this.desktopHeight})`);
+      }
+      this.desktopWidth = serverSize.width;
+      this.desktopHeight = serverSize.height;
+    }
 
     this.sendConfirmActive();
     this.sendSynchronize();
@@ -655,8 +720,47 @@ export class RdpClient extends EventEmitter {
 
     this.phase = 'data';
     this.connected = true;
-    this.log('Connection ready');
-    this.emit('ready');
+    this.activated = true;
+
+    if (!this.everActivated) {
+      this.everActivated = true;
+      this.log('Connection ready');
+      this.emit('ready');
+    } else {
+      this.log(`Session re-activated at ${this.desktopWidth}x${this.desktopHeight}`);
+      this.emit('resize', { width: this.desktopWidth, height: this.desktopHeight });
+    }
+
+    // A resize requested while the channel wasn't ready or while deactivated
+    if (this.pendingResize) {
+      const p = this.pendingResize;
+      this.pendingResize = null;
+      this.requestDesktopResize(p.width, p.height);
+    }
+  }
+
+  // Walk the server's combined capability sets and pull desktopWidth/Height from TS_BITMAP_CAPABILITYSET
+  private parseServerDesktopSize(caps: Buffer): { width: number; height: number } | null {
+    try {
+      const r = new BufferReader(caps);
+      if (r.remaining < 4) return null;
+      const numberCapabilities = r.readUInt16LE();
+      r.skip(2); // pad2Octets
+      for (let i = 0; i < numberCapabilities && r.remaining >= 4; i++) {
+        const capType = r.readUInt16LE();
+        const capLength = r.readUInt16LE();
+        if (capLength < 4 || capLength - 4 > r.remaining) break;
+        const body = r.readBytes(capLength - 4);
+        if (capType === types.CapabilitySetType.BITMAP && body.length >= 12) {
+          const width = body.readUInt16LE(8);
+          const height = body.readUInt16LE(10);
+          if (width > 0 && height > 0) return { width, height };
+        }
+      }
+    } catch {
+      // malformed caps — keep current size
+    }
+    return null;
   }
 
   private sendConfirmActive(): void {
@@ -708,8 +812,8 @@ export class RdpClient extends EventEmitter {
     bmp.writeUInt16LE(1); // receive1BitPerPixel
     bmp.writeUInt16LE(1); // receive4BitsPerPixel
     bmp.writeUInt16LE(1); // receive8BitsPerPixel
-    bmp.writeUInt16LE(this.config.width);  // desktopWidth
-    bmp.writeUInt16LE(this.config.height); // desktopHeight
+    bmp.writeUInt16LE(this.desktopWidth);  // desktopWidth (must echo the server's current size)
+    bmp.writeUInt16LE(this.desktopHeight); // desktopHeight
     bmp.writeUInt16LE(0); // pad2octets
     bmp.writeUInt16LE(1); // desktopResizeFlag
     bmp.writeUInt16LE(1); // bitmapCompressionFlag
@@ -754,6 +858,15 @@ export class RdpClient extends EventEmitter {
     inp.writeUInt32LE(12); // keyboardFunctionKey
     inp.writePad(64); // imeFileName
     capSets.push(inp.toBuffer()); numCaps++;
+
+    // Pointer capability — without it the server never sends cursor shapes
+    const ptr = new BufferWriter(12);
+    ptr.writeUInt16LE(types.CapabilitySetType.POINTER);
+    ptr.writeUInt16LE(10);
+    ptr.writeUInt16LE(1);  // colorPointerFlag
+    ptr.writeUInt16LE(25); // colorPointerCacheSize
+    ptr.writeUInt16LE(25); // pointerCacheSize
+    capSets.push(ptr.toBuffer()); numCaps++;
 
     // Sound capability (for audio)
     const snd = new BufferWriter(12);
@@ -826,6 +939,11 @@ export class RdpClient extends EventEmitter {
       case types.PDUType2.SET_ERROR_INFO:
         this.handleErrorInfo(shareData.payload);
         break;
+      case types.PDUType2.POINTER: {
+        const upd = pointer.parseSlowPathPointerPDU(shareData.payload);
+        if (upd) this.emit('pointer', upd);
+        break;
+      }
       case types.PDUType2.SAVE_SESSION_INFO:
         this.log('Received Save Session Info');
         break;
@@ -935,10 +1053,13 @@ export class RdpClient extends EventEmitter {
           return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, data: pixelData };
         });
         this.emit('bitmap', processedRects);
-      } else if (updateCode === 0x04) {
-        // FASTPATH_UPDATETYPE_POINTER_HIDDEN
-      } else if (updateCode === 0x05) {
-        // FASTPATH_UPDATETYPE_POINTER_DEFAULT
+      } else if (pointer.isFastPathPointerUpdate(updateCode)) {
+        try {
+          const upd = pointer.parseFastPathPointerUpdate(updateCode, updateData);
+          if (upd) this.emit('pointer', upd);
+        } catch (err) {
+          this.log(`Pointer update parse error (code 0x${updateCode.toString(16)}): ${err}`);
+        }
       }
     }
   }
@@ -994,7 +1115,26 @@ export class RdpClient extends EventEmitter {
       this.handleClipRdrData(channelData);
     } else if (channelName === types.RDPDR_CHANNEL_NAME) {
       this.handleRdpDrData(channelData);
+    } else if (channelName === dynvc.DRDYNVC_CHANNEL_NAME) {
+      this.handleDynvcData(channelData);
     }
+  }
+
+  // ===== DRDYNVC (Dynamic Virtual Channels) / Display Control =====
+
+  private handleDynvcData(data: Buffer): void {
+    const result = dynvc.processDynvcData(data, this.dynvcState);
+    for (const line of result.log) this.log(line);
+    for (const resp of result.responses) this.sendVirtualChannelData(dynvc.DRDYNVC_CHANNEL_NAME, resp);
+    if (result.displayControlReady) {
+      this.emit('displayControl', true);
+      if (this.pendingResize) {
+        const p = this.pendingResize;
+        this.pendingResize = null;
+        this.requestDesktopResize(p.width, p.height);
+      }
+    }
+    if (result.displayControlClosed) this.emit('displayControl', false);
   }
 
   // ===== CLIPRDR (Clipboard Redirection) =====
@@ -1090,7 +1230,7 @@ export class RdpClient extends EventEmitter {
   // ===== Input Sending =====
 
   sendKeyboard(type: 'keydown' | 'keyup', scanCode: number, extended: boolean): void {
-    if (!this.connected) return;
+    if (!this.connected || !this.activated) return;
     const evt: input.KeyboardEvent = { type, scanCode, extended };
     const inputData = input.buildInputPDU([evt], this.shareId);
     const pdu = this.buildDataPDU(types.PDUType2.INPUT, inputData);
@@ -1098,7 +1238,7 @@ export class RdpClient extends EventEmitter {
   }
 
   sendMouse(type: 'move' | 'down' | 'up' | 'wheel', x: number, y: number, button?: 'left' | 'right' | 'middle', wheelDelta?: number): void {
-    if (!this.connected) return;
+    if (!this.connected || !this.activated) return;
     const evt: input.MouseEvent = { type, x, y, button, wheelDelta };
     const inputData = input.buildInputPDU([evt], this.shareId);
     const pdu = this.buildDataPDU(types.PDUType2.INPUT, inputData);

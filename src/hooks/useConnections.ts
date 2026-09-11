@@ -28,7 +28,7 @@ export function createDefaultConnection(partial?: Partial<RdpConnection>): RdpCo
     redirectClipboard: true,
     redirectDrives: false,
     redirectPrinters: false,
-    captureWindowsKey: false,
+    captureSystemKeys: true,
     hyperVEnabled: false,
     hyperVHost: '',
     hyperVVmName: '',
@@ -62,7 +62,10 @@ export function useConnections() {
           const loaded = await window.rdpea.loadConnections();
           // Normalize: ensure older profiles have defaults for newer fields
           const normalized = (loaded || []).map(c => {
-            if (c.captureWindowsKey === undefined) c.captureWindowsKey = false;
+            // captureSystemKeys supersedes the old captureWindowsKey (which never actually
+            // stopped the host from seeing the key); default on for every profile
+            if (c.captureSystemKeys === undefined) c.captureSystemKeys = true;
+            delete (c as any).captureWindowsKey;
             if (c.hyperVEnabled === undefined) c.hyperVEnabled = false;
             if (c.hyperVHost === undefined) c.hyperVHost = '';
             if (c.hyperVVmName === undefined) c.hyperVVmName = '';

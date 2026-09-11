@@ -16,7 +16,8 @@ export interface RdpConnection {
   redirectClipboard: boolean;
   redirectDrives: boolean;
   redirectPrinters: boolean;
-  captureWindowsKey: boolean;
+  /** Forward Win key, Alt+Tab, Alt+Esc, Alt+F4 and Ctrl+Esc to the remote while the session is focused. */
+  captureSystemKeys: boolean;
   hyperVEnabled: boolean;
   hyperVHost: string;
   hyperVVmName: string;
@@ -63,6 +64,19 @@ export interface AudioDataIPC {
   bitsPerSample: number;
 }
 
+export type PointerUpdateIPC =
+  | { kind: 'hidden' }
+  | { kind: 'default' }
+  | { kind: 'cached'; cacheIndex: number }
+  | { kind: 'new'; cacheIndex: number; hotX: number; hotY: number; width: number; height: number; data: Uint8Array };
+
+export interface SessionInfoIPC {
+  width: number;
+  height: number;
+  /** Main process will honour resize requests (profile has fitToWindow on). */
+  dynamicResize?: boolean;
+}
+
 export interface UpdateStateIPC {
   status: 'idle' | 'unsupported' | 'checking' | 'available' | 'downloading' | 'ready' | 'not-available' | 'error';
   version?: string;
@@ -97,7 +111,10 @@ declare global {
       onDebugLog: (callback: (connectionId: string, message: string) => void) => () => void;
       onFrame: (callback: (connectionId: string, rects: BitmapRectIPC[]) => void) => () => void;
       onAudio: (callback: (connectionId: string, audioData: AudioDataIPC) => void) => () => void;
-      onConnected: (callback: (connectionId: string, info?: { width: number; height: number }) => void) => () => void;
+      onConnected: (callback: (connectionId: string, info?: SessionInfoIPC) => void) => () => void;
+      onResized: (callback: (connectionId: string, size: { width: number; height: number }) => void) => () => void;
+      onPointer: (callback: (connectionId: string, update: PointerUpdateIPC) => void) => () => void;
+      requestResize: (connectionId: string, width: number, height: number) => Promise<boolean>;
       onDisconnected: (callback: (connectionId: string) => void) => () => void;
       onError: (callback: (connectionId: string, message: string) => void) => () => void;
       openExternal: (url: string) => void;

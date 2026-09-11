@@ -297,8 +297,9 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
                   <span className="text-sm text-surface-300 group-hover:text-surface-100">Match resolution to window size (recommended)</span>
                 </label>
                 <p className="text-xs text-surface-500 mt-1 ml-7">
-                  Connects at the session window's exact pixel size so the desktop renders 1:1 with no scaling blur.
-                  Reconnect after resizing the window to adopt its new size.
+                  Connects at the session window's exact pixel size so the desktop renders 1:1 with no scaling blur,
+                  and asks the server to follow the window whenever you resize it (servers without Display Control
+                  support keep the last size, scaled).
                 </p>
               </div>
 
@@ -343,7 +344,7 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
               <div className="p-3 glass rounded-lg text-sm text-surface-400">
                 <p>
                   {form.fitToWindow
-                    ? 'The width and height only set how large the session window opens. The remote desktop is negotiated at the window\'s real pixel size on every connect.'
+                    ? 'The width and height only set how large the session window opens. The remote desktop is negotiated at the window\'s real pixel size on connect and re-negotiated live after each resize.'
                     : 'The remote desktop uses this fixed resolution. If the window is a different size, the image is scaled with high-quality resampling.'}
                 </p>
               </div>
@@ -404,16 +405,17 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
                 <label className="flex items-center gap-3 cursor-pointer group">
                   <input
                     type="checkbox"
-                    checked={form.captureWindowsKey}
-                    onChange={(e) => update('captureWindowsKey', e.target.checked)}
+                    checked={form.captureSystemKeys}
+                    onChange={(e) => update('captureSystemKeys', e.target.checked)}
                     className="w-4 h-4 rounded border-surface-500 bg-surface-800 text-primary-500 focus:ring-primary-500/50"
                   />
                   <Keyboard className="w-4 h-4 text-surface-400 group-hover:text-surface-200" />
-                  <span className="text-sm text-surface-300 group-hover:text-surface-100">Capture Windows Key</span>
+                  <span className="text-sm text-surface-300 group-hover:text-surface-100">Send system shortcuts to the remote</span>
                 </label>
               </div>
               <p className="text-xs text-surface-500 mt-1">
-                When enabled, the Windows key is forwarded to the remote session (best in full-screen).
+                While the session window is focused, the Windows key (and Win+combos), Alt+Tab, Alt+Esc, Alt+F4 and
+                Ctrl+Esc go to the remote desktop instead of this PC. Ctrl+Alt+Del and Win+L always stay local.
               </p>
             </>
           )}

@@ -5,7 +5,7 @@ import {
   WifiOff, ArrowLeft, Loader2, Minus, Square, X,
   Monitor, PanelTopClose, PanelTop, Bug, ChevronDown, ChevronUp,
 } from 'lucide-react';
-import { BitmapRectIPC, AudioDataIPC } from '../types';
+import { BitmapRectIPC, AudioDataIPC, PointerUpdateIPC } from '../types';
 
 // DOM key code → RDP scan code mapping (matches electron/rdp/input.ts)
 const DOM_TO_SCANCODE: Record<string, { code: number; extended: boolean }> = {
@@ -91,6 +91,23 @@ const AUTO_RETRY_MAX_ATTEMPTS = Math.floor(AUTO_RETRY_WINDOW_MS / AUTO_RETRY_INT
 // this time is treated as failed so the retry loop can continue.
 const CONNECT_ATTEMPT_TIMEOUT_MS = 45_000;
 
+// Live resize: after the window stops changing size for this long, ask the server for a
+// desktop that matches it exactly. The scaled image is shown in the meantime.
+const RESIZE_SETTLE_MS = 600;
+
+// Chromium ignores CSS cursors larger than this
+const MAX_CSS_CURSOR_PX = 128;
+
+interface CachedPointer {
+  width: number;
+  height: number;
+  hotX: number;
+  hotY: number;
+  rgba: Uint8ClampedArray<ArrayBuffer>;
+  css?: string;    // memoised CSS value for the current cursorScale
+  cssScale?: number;
+}
+
 export function SessionView() {
   const { connectionId } = useParams<{ connectionId: string }>();
   // Visible canvas: sized in *device* pixels to exactly match its on-screen footprint,
@@ -103,6 +120,13 @@ export function SessionView() {
   // Device pixels per remote pixel on each axis (1 = pixel-perfect).
   const scaleRef = useRef({ x: 1, y: 1 });
   const canvasSizeRef = useRef({ width: 1920, height: 1080 });
+  // Live resize (fit-to-window sessions): main honours rdp:resize requests
+  const dynamicResizeRef = useRef(false);
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastRequestedSizeRef = useRef<{ width: number; height: number } | null>(null);
+  // Remote cursor shapes
+  const pointerCacheRef = useRef<Map<number, CachedPointer>>(new Map());
+  const currentPointerRef = useRef<{ kind: 'hidden' | 'default' | 'cached'; cacheIndex?: number }>({ kind: 'default' });
   const containerRef = useRef<HTMLDivElement>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const nextPlayTimeRef = useRef<number>(0);
@@ -144,13 +168,122 @@ export function SessionView() {
       backCanvasRef.current = back;
     }
     if (back.width !== width || back.height !== height) {
+      // Keep a scaled copy of the old desktop as a placeholder until the server repaints
+      // at the new size — avoids a black flash on live resize.
+      let snapshot: HTMLCanvasElement | null = null;
+      if (back.width > 0 && back.height > 0) {
+        snapshot = document.createElement('canvas');
+        snapshot.width = back.width;
+        snapshot.height = back.height;
+        snapshot.getContext('2d')?.drawImage(back, 0, 0);
+      }
       back.width = width;
       back.height = height;
       backCtxRef.current = null;
+      const ctx = back.getContext('2d', { alpha: false });
+      if (ctx && snapshot) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(snapshot, 0, 0, snapshot.width, snapshot.height, 0, 0, width, height);
+      }
+      backCtxRef.current = ctx;
     }
     if (!backCtxRef.current) backCtxRef.current = back.getContext('2d', { alpha: false });
     return backCtxRef.current;
   }, []);
+
+  // ── Remote cursor → CSS cursor ───────────────────────────────────
+  // Cursor bitmaps arrive in remote pixels; render them at the same on-screen size as the
+  // desktop (scale / DPR) so the pointer matches the content it hovers over.
+  const buildCursorCss = useCallback((p: CachedPointer): string | null => {
+    const dpr = window.devicePixelRatio || 1;
+    const cursorScale = scaleRef.current.x / dpr; // CSS px per remote px
+    if (p.css && p.cssScale === cursorScale) return p.css;
+    const outW = Math.max(1, Math.min(MAX_CSS_CURSOR_PX, Math.round(p.width * cursorScale)));
+    const outH = Math.max(1, Math.min(MAX_CSS_CURSOR_PX, Math.round(p.height * cursorScale)));
+    try {
+      const src = document.createElement('canvas');
+      src.width = p.width;
+      src.height = p.height;
+      const sctx = src.getContext('2d');
+      if (!sctx) return null;
+      sctx.putImageData(new ImageData(p.rgba, p.width, p.height), 0, 0);
+
+      let dataUrl: string;
+      if (outW === p.width && outH === p.height) {
+        dataUrl = src.toDataURL('image/png');
+      } else {
+        const dst = document.createElement('canvas');
+        dst.width = outW;
+        dst.height = outH;
+        const dctx = dst.getContext('2d');
+        if (!dctx) return null;
+        dctx.imageSmoothingEnabled = true;
+        dctx.imageSmoothingQuality = 'high';
+        dctx.drawImage(src, 0, 0, p.width, p.height, 0, 0, outW, outH);
+        dataUrl = dst.toDataURL('image/png');
+      }
+      const hx = Math.min(outW - 1, Math.round(p.hotX * (outW / p.width)));
+      const hy = Math.min(outH - 1, Math.round(p.hotY * (outH / p.height)));
+      p.css = `url("${dataUrl}") ${hx} ${hy}, default`;
+      p.cssScale = cursorScale;
+      return p.css;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const applyCurrentPointer = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const cur = currentPointerRef.current;
+    if (cur.kind === 'hidden') { canvas.style.cursor = 'none'; return; }
+    if (cur.kind === 'cached' && cur.cacheIndex !== undefined) {
+      const p = pointerCacheRef.current.get(cur.cacheIndex);
+      const css = p ? buildCursorCss(p) : null;
+      canvas.style.cursor = css || 'default';
+      return;
+    }
+    canvas.style.cursor = 'default';
+  }, [buildCursorCss]);
+
+  const handlePointerUpdate = useCallback((upd: PointerUpdateIPC) => {
+    if (upd.kind === 'new') {
+      const needed = upd.width * upd.height * 4;
+      if (upd.data.byteLength < needed || upd.width <= 0 || upd.height <= 0) return;
+      // Copy: the IPC buffer is not guaranteed to outlive this callback
+      const rgba = new Uint8ClampedArray(new ArrayBuffer(needed));
+      rgba.set(new Uint8Array(upd.data.buffer as ArrayBuffer, upd.data.byteOffset, needed));
+      pointerCacheRef.current.set(upd.cacheIndex, { width: upd.width, height: upd.height, hotX: upd.hotX, hotY: upd.hotY, rgba });
+      currentPointerRef.current = { kind: 'cached', cacheIndex: upd.cacheIndex };
+    } else if (upd.kind === 'cached') {
+      currentPointerRef.current = { kind: 'cached', cacheIndex: upd.cacheIndex };
+    } else {
+      currentPointerRef.current = { kind: upd.kind };
+    }
+    applyCurrentPointer();
+  }, [applyCurrentPointer]);
+
+  // ── Live resize request (debounced) ──────────────────────────────
+  const scheduleResizeRequest = useCallback((availW: number, availH: number) => {
+    if (!dynamicResizeRef.current || !connectionId) return;
+    const width = Math.floor(availW / 4) * 4;
+    const height = Math.floor(availH / 4) * 4;
+    if (width < 200 || height < 200) return;
+    const cur = canvasSizeRef.current;
+    const last = lastRequestedSizeRef.current;
+    if (width === cur.width && height === cur.height) {
+      if (resizeTimerRef.current) { clearTimeout(resizeTimerRef.current); resizeTimerRef.current = null; }
+      return;
+    }
+    if (last && last.width === width && last.height === height) return; // already asked
+    if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+    resizeTimerRef.current = setTimeout(() => {
+      resizeTimerRef.current = null;
+      lastRequestedSizeRef.current = { width, height };
+      window.rdpea?.requestResize(connectionId, width, height).catch(() => {});
+    }, RESIZE_SETTLE_MS);
+  }, [connectionId]);
 
   const getFrontCtx = useCallback(() => {
     const canvas = canvasRef.current;
@@ -225,11 +358,17 @@ export function SessionView() {
     canvas.style.height = `${devH / dpr}px`;
     canvas.style.left = `${Math.round((availW - devW) / 2) / dpr}px`;
     canvas.style.top = `${Math.round((availH - devH) / 2) / dpr}px`;
+    const prevScale = scaleRef.current.x;
     scaleRef.current = { x: devW / rdpW, y: devH / rdpH };
 
     // Repaint everything from the back buffer at the new size
     if (backCanvasRef.current) blit(0, 0, rdpW, rdpH);
-  }, [blit]);
+    // Cursor bitmaps are rendered relative to the desktop scale
+    if (prevScale !== scaleRef.current.x) applyCurrentPointer();
+
+    // Fit-to-window sessions: ask the server to match the new size once the resize settles
+    scheduleResizeRequest(availW, availH);
+  }, [blit, applyCurrentPointer, scheduleResizeRequest]);
 
   const flushFrames = useCallback(() => {
     rafIdRef.current = 0;
@@ -267,6 +406,7 @@ export function SessionView() {
     canvasSizeRef.current = canvasSize;
     if (!isConnected) return;
     layoutViewport();
+    applyCurrentPointer(); // canvas element may have just (re)mounted
 
     const container = containerRef.current;
     const observer = container ? new ResizeObserver(() => layoutViewport()) : null;
@@ -282,7 +422,7 @@ export function SessionView() {
       dprQuery.removeEventListener('change', onDprChange);
       window.removeEventListener('resize', onDprChange);
     };
-  }, [isConnected, canvasSize, layoutViewport]);
+  }, [isConnected, canvasSize, layoutViewport, applyCurrentPointer]);
 
   const renderFrame = useCallback((rects: BitmapRectIPC[]) => {
     // Accumulate rects and schedule a single paint on next animation frame
@@ -372,11 +512,25 @@ export function SessionView() {
         retryAttemptRef.current = 0;
         setRetryExhausted(false);
         setAutoRetryEnabled(true);
+        dynamicResizeRef.current = !!info?.dynamicResize;
+        lastRequestedSizeRef.current = null;
+        pointerCacheRef.current.clear();
+        currentPointerRef.current = { kind: 'default' };
         if (info?.width && info?.height) {
           canvasSizeRef.current = { width: info.width, height: info.height };
           setCanvasSize({ width: info.width, height: info.height });
         }
       }
+    });
+    const unsubResized = window.rdpea.onResized((id, size) => {
+      if (id === connectionId && size?.width && size?.height) {
+        lastRequestedSizeRef.current = null;
+        canvasSizeRef.current = { width: size.width, height: size.height };
+        setCanvasSize({ width: size.width, height: size.height });
+      }
+    });
+    const unsubPointer = window.rdpea.onPointer((id, upd) => {
+      if (id === connectionId) handlePointerUpdate(upd);
     });
     const unsubDisconnected = window.rdpea.onDisconnected((id) => {
       if (id === connectionId) { setIsConnected(false); setIsConnecting(false); }
@@ -416,10 +570,11 @@ export function SessionView() {
     });
 
     return () => {
-      unsubFrame(); unsubAudio(); unsubConnected(); unsubDisconnected(); unsubError(); unsubDebug(); unsubDebugGlobal();
+      unsubFrame(); unsubAudio(); unsubConnected(); unsubResized(); unsubPointer(); unsubDisconnected(); unsubError(); unsubDebug(); unsubDebugGlobal();
       if (rafIdRef.current) { cancelAnimationFrame(rafIdRef.current); rafIdRef.current = 0; }
+      if (resizeTimerRef.current) { clearTimeout(resizeTimerRef.current); resizeTimerRef.current = null; }
     };
-  }, [connectionId, renderFrame, playAudio]);
+  }, [connectionId, renderFrame, playAudio, handlePointerUpdate]);
 
   // ── Keyboard input ───────────────────────────────────────────────
   useEffect(() => {
