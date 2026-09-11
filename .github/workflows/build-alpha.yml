@@ -8,8 +8,49 @@ on:
 permissions:
   contents: write
 
+# Release flow
+#   1. create-release  → one draft release for this run's alpha version. A single creator means
+#                        the three platform builds can't race each other into a 422 "tag exists".
+#   2. build-*         → electron-builder finds the draft by tag and uploads into it
+#   3. publish-release → flip the draft to a published *pre-release* once the Windows build (the
+#                        auto-updater's primary target) has uploaded. Drafts are invisible to
+#                        electron-updater, so this step is what makes the build reach alpha users.
+
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Compute alpha version
+        id: ver
+        run: |
+          BASE=$(node -p "require('./package.json').version.replace(/-.*$/, '')")
+          VERSION="${BASE}-alpha.${{ github.run_number }}"
+          echo "Alpha version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        run: |
+          tag="${{ steps.ver.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists — reusing it"
+          else
+            gh release create "$tag" --draft --prerelease --target "${{ github.sha }}" \
+              --title "RDPea Alpha $tag" \
+              --notes "Alpha build of commit ${{ github.sha }} on branch alpha."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+
   build-windows-alpha:
+    needs: create-release
     runs-on: windows-latest
 
     steps:
@@ -28,14 +69,13 @@ jobs:
         shell: pwsh
         run: |
           $pkg = Get-Content package.json | ConvertFrom-Json
-          $base = $pkg.version -replace '-.*$', ''
-          $alpha = "$base-alpha.${{ github.run_number }}"
+          $alpha = "${{ needs.create-release.outputs.version }}"
           Write-Host "Alpha version: $alpha"
           $pkg.version = $alpha
           $pkg.name = 'rdpea-alpha'
           $pkg.build.appId = 'com.rdpea.app.alpha'
           $pkg.build.productName = 'RDPea Alpha'
-          # Publish as a *pre-release*, not a draft: drafts are invisible to the auto-updater
+          # If the draft somehow doesn't exist, publish as a pre-release rather than a draft
           $pkg.build.publish | Add-Member -MemberType NoteProperty -Name releaseType -Value 'prerelease' -Force
           $pkg | ConvertTo-Json -Depth 20 | Set-Content package.json
           echo "ALPHA_VERSION=$alpha" >> $env:GITHUB_ENV
@@ -57,6 +97,7 @@ jobs:
             release/*.yml
 
   build-macos-alpha:
+    needs: create-release
     runs-on: macos-latest
 
     steps:
@@ -73,8 +114,7 @@ jobs:
 
       - name: Stamp alpha version & identity
         run: |
-          BASE=$(bun -e "console.log(require('./package.json').version.replace(/-.*$/, ''))")
-          ALPHA="${BASE}-alpha.${{ github.run_number }}"
+          ALPHA="${{ needs.create-release.outputs.version }}"
           echo "Alpha version: $ALPHA"
           bun -e "
             const fs=require('fs');
@@ -83,7 +123,6 @@ jobs:
             p.name='rdpea-alpha';
             p.build.appId='com.rdpea.app.alpha';
             p.build.productName='RDPea Alpha';
-            // Publish as a *pre-release*, not a draft: drafts are invisible to the auto-updater
             p.build.publish.releaseType='prerelease';
             fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n');
           "
@@ -107,6 +146,7 @@ jobs:
             release/*.yml
 
   build-linux-alpha:
+    needs: create-release
     runs-on: ubuntu-latest
 
     steps:
@@ -123,8 +163,7 @@ jobs:
 
       - name: Stamp alpha version & identity
         run: |
-          BASE=$(bun -e "console.log(require('./package.json').version.replace(/-.*$/, ''))")
-          ALPHA="${BASE}-alpha.${{ github.run_number }}"
+          ALPHA="${{ needs.create-release.outputs.version }}"
           echo "Alpha version: $ALPHA"
           bun -e "
             const fs=require('fs');
@@ -133,7 +172,6 @@ jobs:
             p.name='rdpea-alpha';
             p.build.appId='com.rdpea.app.alpha';
             p.build.productName='RDPea Alpha';
-            // Publish as a *pre-release*, not a draft: drafts are invisible to the auto-updater
             p.build.publish.releaseType='prerelease';
             fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n');
           "
@@ -157,3 +195,26 @@ jobs:
             release/*.AppImage
             release/*.deb
             release/*.yml
+
+  publish-release:
+    needs: [create-release, build-windows-alpha, build-macos-alpha, build-linux-alpha]
+    # Publish as long as the Windows build succeeded; a failed mac/linux job can be re-run.
+    if: ${{ !cancelled() && needs.build-windows-alpha.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify update manifest is attached
+        run: |
+          tag="${{ needs.create-release.outputs.tag }}"
+          assets=$(gh release view "$tag" --json assets -q '.assets[].name')
+          echo "$assets"
+          echo "$assets" | grep -qx 'latest.yml' || { echo "::error::latest.yml missing from $tag — Windows auto-update would fail"; exit 1; }
+          echo "$assets" | grep -q 'Setup-.*\.exe$' || { echo "::error::Setup exe missing from $tag"; exit 1; }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+
+      - name: Publish as pre-release
+        run: gh release edit "${{ needs.create-release.outputs.tag }}" --draft=false --prerelease --latest=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
