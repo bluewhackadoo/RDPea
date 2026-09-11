@@ -285,9 +285,28 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
 
           {activeTab === 'display' && (
             <>
-              <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="flex items-center gap-3 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={form.fitToWindow}
+                    onChange={(e) => update('fitToWindow', e.target.checked)}
+                    className="w-4 h-4 rounded border-surface-500 bg-surface-800 text-primary-500 focus:ring-primary-500/50"
+                  />
+                  <Monitor className="w-4 h-4 text-surface-400 group-hover:text-surface-200" />
+                  <span className="text-sm text-surface-300 group-hover:text-surface-100">Match resolution to window size (recommended)</span>
+                </label>
+                <p className="text-xs text-surface-500 mt-1 ml-7">
+                  Connects at the session window's exact pixel size so the desktop renders 1:1 with no scaling blur.
+                  Reconnect after resizing the window to adopt its new size.
+                </p>
+              </div>
+
+              <div className={`grid grid-cols-2 gap-3 ${form.fitToWindow ? 'opacity-50' : ''}`}>
                 <div>
-                  <label className="block text-xs font-medium text-surface-400 mb-1">Width</label>
+                  <label className="block text-xs font-medium text-surface-400 mb-1">
+                    {form.fitToWindow ? 'Initial window width' : 'Width'}
+                  </label>
                   <input
                     type="number"
                     value={form.width}
@@ -296,7 +315,9 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-surface-400 mb-1">Height</label>
+                  <label className="block text-xs font-medium text-surface-400 mb-1">
+                    {form.fitToWindow ? 'Initial window height' : 'Height'}
+                  </label>
                   <input
                     type="number"
                     value={form.height}
@@ -320,7 +341,11 @@ export function ConnectionForm({ connection, groups, onSave, onCancel }: Connect
               </div>
 
               <div className="p-3 glass rounded-lg text-sm text-surface-400">
-                <p>Resolution will dynamically adapt when the session window is resized. The values above set the initial resolution.</p>
+                <p>
+                  {form.fitToWindow
+                    ? 'The width and height only set how large the session window opens. The remote desktop is negotiated at the window\'s real pixel size on every connect.'
+                    : 'The remote desktop uses this fixed resolution. If the window is a different size, the image is scaled with high-quality resampling.'}
+                </p>
               </div>
             </>
           )}

@@ -35,6 +35,8 @@ jobs:
           $pkg.name = 'rdpea-alpha'
           $pkg.build.appId = 'com.rdpea.app.alpha'
           $pkg.build.productName = 'RDPea Alpha'
+          # Publish as a *pre-release*, not a draft: drafts are invisible to the auto-updater
+          $pkg.build.publish | Add-Member -MemberType NoteProperty -Name releaseType -Value 'prerelease' -Force
           $pkg | ConvertTo-Json -Depth 20 | Set-Content package.json
           echo "ALPHA_VERSION=$alpha" >> $env:GITHUB_ENV
 
@@ -81,6 +83,8 @@ jobs:
             p.name='rdpea-alpha';
             p.build.appId='com.rdpea.app.alpha';
             p.build.productName='RDPea Alpha';
+            // Publish as a *pre-release*, not a draft: drafts are invisible to the auto-updater
+            p.build.publish.releaseType='prerelease';
             fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n');
           "
           echo "ALPHA_VERSION=$ALPHA" >> $GITHUB_ENV
@@ -129,6 +133,8 @@ jobs:
             p.name='rdpea-alpha';
             p.build.appId='com.rdpea.app.alpha';
             p.build.productName='RDPea Alpha';
+            // Publish as a *pre-release*, not a draft: drafts are invisible to the auto-updater
+            p.build.publish.releaseType='prerelease';
             fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n');
           "
           echo "ALPHA_VERSION=$ALPHA" >> $GITHUB_ENV
@@ -136,8 +142,10 @@ jobs:
       - name: Generate icons
         run: bun run generate-icons
 
+      # Alpha skips the snap target: this runner has no snapcraft, and a failing snap step
+      # previously killed the Linux job (no latest-linux.yml was ever uploaded).
       - name: Build & publish
-        run: bunx --bun vite build && bunx electron-builder --linux --publish always
+        run: bunx --bun vite build && bunx electron-builder --linux AppImage deb --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

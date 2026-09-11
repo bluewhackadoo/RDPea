@@ -8,8 +8,32 @@ on:
 permissions:
   contents: write
 
+# Release flow
+#   1. create-release  → exactly one draft release for the tag (single creator ⇒ no duplicate drafts)
+#   2. build-*         → build, sign, upload assets to that draft
+#   3. publish-release → flip the draft to a published "latest" release only once the signed
+#                        Windows build (the auto-updater's primary target) has uploaded, so
+#                        clients never see a half-populated release
+#   4. package managers publish from the finished release
+
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create draft release
+        run: |
+          tag="${{ github.ref_name }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists — reusing it"
+          else
+            gh release create "$tag" --title "RDPea $tag" --generate-notes --draft
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+
   build-windows:
+    needs: create-release
     runs-on: windows-latest
 
     steps:
@@ -106,18 +130,29 @@ jobs:
             Get-Content $ymlFile
           }
 
-      - name: Publish signed artifacts to GitHub Release
+      - name: Verify latest.yml matches signed installer
+        run: |
+          $yml = Get-Content release/latest.yml -Raw
+          if ($yml -notmatch '(?m)^path:\s+(.+\.exe)\s*$') { Write-Error "latest.yml has no path entry"; exit 1 }
+          $exe = Join-Path release $Matches[1]
+          if (-not (Test-Path $exe)) { Write-Error "latest.yml points at missing file $exe"; exit 1 }
+          $expected = [Convert]::ToBase64String([System.Security.Cryptography.SHA512]::Create().ComputeHash([System.IO.File]::ReadAllBytes($exe)))
+          if ($yml -notmatch "(?m)^sha512:\s+$([regex]::Escape($expected))\s*$") { Write-Error "latest.yml sha512 does not match $exe"; exit 1 }
+          Write-Host "latest.yml OK: $exe sha512 verified"
+
+      # Only the installer + update manifest are uploaded. The .blockmap is deliberately left
+      # out: it was generated before signing and no longer matches the exe, so the updater
+      # must fall back to a full download instead of a corrupt differential one.
+      - name: Upload signed artifacts to draft release
         run: |
           $tag = "${{ github.ref_name }}"
-          # Create release if it doesn't exist (other jobs may also create it)
-          gh release create $tag --title "RDPea $tag" --generate-notes --draft=false 2>$null || true
-          # Upload signed exe and update yml files
           Get-ChildItem release/*.exe, release/*.yml | ForEach-Object {
             Write-Host "Uploading: $($_.Name)"
             gh release upload $tag $_.FullName --clobber
           }
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -128,6 +163,7 @@ jobs:
             release/*.yml
 
   build-macos:
+    needs: create-release
     runs-on: macos-latest
 
     steps:
@@ -145,10 +181,23 @@ jobs:
       - name: Generate icons
         run: bun run generate-icons
 
-      - name: Build & publish
-        run: bunx --bun vite build && bunx electron-builder --mac --publish onTag
+      # --publish never: letting electron-builder publish here created a *second*, draft
+      # release for the same tag, so latest-mac.yml never reached the real release.
+      - name: Build (no publish)
+        run: bunx --bun vite build && bunx electron-builder --mac --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts to draft release
+        run: |
+          tag="${{ github.ref_name }}"
+          for f in release/*.dmg release/*.zip release/*.blockmap release/*.yml; do
+            [ -f "$f" ] && echo "Uploading: $(basename "$f")" && gh release upload "$tag" "$f" --clobber
+          done
+          true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -160,6 +209,7 @@ jobs:
             release/*.yml
 
   build-linux:
+    needs: create-release
     runs-on: ubuntu-latest
 
     steps:
@@ -185,15 +235,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish artifacts to GitHub Release
+      - name: Upload artifacts to draft release
         run: |
           tag="${{ github.ref_name }}"
-          gh release create "$tag" --title "RDPea $tag" --generate-notes --draft=false 2>/dev/null || true
           for f in release/*.AppImage release/*.deb release/*.snap release/*.yml; do
-            [ -f "$f" ] && echo "Uploading: $(basename $f)" && gh release upload "$tag" "$f" --clobber
+            [ -f "$f" ] && echo "Uploading: $(basename "$f")" && gh release upload "$tag" "$f" --clobber
           done
+          true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -205,8 +256,32 @@ jobs:
             release/*.snap
             release/*.yml
 
+  publish-release:
+    needs: [build-windows, build-macos, build-linux]
+    # Publish as long as the signed Windows build (the updater's primary target) succeeded;
+    # a failed mac/linux job can be re-run and its assets re-uploaded with --clobber.
+    if: ${{ !cancelled() && needs.build-windows.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify update manifest is attached
+        run: |
+          tag="${{ github.ref_name }}"
+          assets=$(gh release view "$tag" --json assets -q '.assets[].name')
+          echo "$assets"
+          echo "$assets" | grep -qx 'latest.yml' || { echo "::error::latest.yml missing from $tag — Windows auto-update would fail"; exit 1; }
+          echo "$assets" | grep -q 'Setup-.*\.exe$' || { echo "::error::Setup exe missing from $tag"; exit 1; }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+
+      - name: Publish release
+        run: gh release edit "${{ github.ref_name }}" --draft=false --latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+
   publish-winget:
-    needs: build-windows
+    needs: publish-release
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -218,7 +293,7 @@ jobs:
           token: ${{ secrets.WINGET_TOKEN }}
 
   publish-chocolatey:
-    needs: build-windows
+    needs: [build-windows, publish-release]
     runs-on: windows-latest
     continue-on-error: true
     steps:
@@ -274,7 +349,7 @@ jobs:
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
 
   publish-snap:
-    needs: build-linux
+    needs: [build-linux, publish-release]
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:

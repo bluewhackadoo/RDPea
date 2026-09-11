@@ -14,6 +14,16 @@ export function UpdateNotification() {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
+    // Catch up on anything the updater already did before this component mounted
+    // (e.g. the startup check finished while the window was still loading).
+    window.rdpea.getUpdateState?.().then((state) => {
+      if (!state) return;
+      if (state.status === 'checking') { setStatus({ type: 'checking' }); setVisible(true); }
+      else if (state.status === 'available') { setStatus({ type: 'available', version: state.version || '' }); setVisible(true); }
+      else if (state.status === 'downloading') { setStatus({ type: 'downloading', percent: state.percent || 0 }); setVisible(true); }
+      else if (state.status === 'ready') { setStatus({ type: 'ready', version: state.version || '' }); setVisible(true); }
+    }).catch(() => {});
+
     const unsubChecking = window.rdpea.onUpdateChecking(() => {
       setStatus({ type: 'checking' });
       setVisible(true);

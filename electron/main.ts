@@ -101,6 +101,10 @@ function createMainWindow() {
 }
 
 // ── Session Window (per connection) ──────────────────────────────────
+const SESSION_TOOLBAR_HEIGHT = 40; // matches h-10 in SessionView toolbar
+const RDP_MIN_DIMENSION = 200;
+const RDP_MAX_DIMENSION = 8192;
+
 function createSessionWindow(connectionId: string, connectionName: string, rdpWidth = 1920, rdpHeight = 1080) {
   if (sessionWindows.has(connectionId)) {
     const existing = sessionWindows.get(connectionId)!;
@@ -109,7 +113,7 @@ function createSessionWindow(connectionId: string, connectionName: string, rdpWi
   }
 
   // Scale window to fit within 85% of the screen work area while preserving aspect ratio
-  const TOOLBAR_HEIGHT = 40; // matches h-10 in SessionView toolbar
+  const TOOLBAR_HEIGHT = SESSION_TOOLBAR_HEIGHT;
   const workArea = screen.getPrimaryDisplay().workAreaSize;
   const maxW = Math.floor(workArea.width * 0.85);
   const maxH = Math.floor(workArea.height * 0.85) - TOOLBAR_HEIGHT;
@@ -156,6 +160,23 @@ function createSessionWindow(connectionId: string, connectionName: string, rdpWi
     // Notify main window so it updates connection status
     mainWindow?.webContents.send('rdp:disconnected', connectionId);
   });
+}
+
+// Measure the session window's canvas area in *physical* pixels so the remote desktop can be
+// negotiated at exactly that size — a 1:1 pixel mapping is the only way to get a truly sharp image.
+function measureSessionDesktopSize(connectionId: string): { width: number; height: number } | null {
+  const win = sessionWindows.get(connectionId);
+  if (!win || win.isDestroyed()) return null;
+  const [contentW, contentH] = win.getContentSize();
+  const scaleFactor = screen.getDisplayMatching(win.getBounds()).scaleFactor || 1;
+  // Multiples of 4 keep bitmap strides aligned for every codec; clamp to what RDP servers accept
+  const width = Math.floor((contentW * scaleFactor) / 4) * 4;
+  const height = Math.floor(((contentH - SESSION_TOOLBAR_HEIGHT) * scaleFactor) / 4) * 4;
+  if (width < RDP_MIN_DIMENSION || height < RDP_MIN_DIMENSION) return null;
+  return {
+    width: Math.min(width, RDP_MAX_DIMENSION),
+    height: Math.min(height, RDP_MAX_DIMENSION),
+  };
 }
 
 // ── Hyper-V Management ───────────────────────────────────────────────
@@ -458,6 +479,17 @@ async function launchRdpConnection(conn: any): Promise<{ success: boolean; error
     // Open session window immediately, sized to match connection resolution
     createSessionWindow(conn.id, conn.name || conn.host, config.width, config.height);
 
+    // Fit-to-window (default): negotiate the desktop at the window's exact physical pixel size so
+    // frames render 1:1 with no scaling. On reconnect this adopts the window's current size.
+    if (conn.fitToWindow !== false) {
+      const fitted = measureSessionDesktopSize(conn.id);
+      if (fitted) {
+        console.log(`Fit-to-window: ${fitted.width}x${fitted.height} (profile ${config.width}x${config.height})`);
+        config.width = fitted.width;
+        config.height = fitted.height;
+      }
+    }
+
     const client = new RdpClient(config);
     rdpClients.set(conn.id, client);
 
@@ -694,10 +726,11 @@ function registerIpcHandlers() {
 
   // Check for updates (manual trigger)
   ipcMain.on('update:check', () => {
-    if (!isDev) {
-      autoUpdater.checkForUpdates().catch(() => {});
-    }
+    runUpdateCheck('manual');
   });
+
+  // Current updater state — lets a window that mounted after an event was emitted catch up
+  ipcMain.handle('update:get-state', () => updateState);
 
   // Quit and install downloaded update
   ipcMain.on('update:install', () => {
@@ -711,6 +744,48 @@ function registerIpcHandlers() {
 }
 
 // ── Auto-Update ─────────────────────────────────────────────────────
+type UpdateStatus = 'idle' | 'unsupported' | 'checking' | 'available' | 'downloading' | 'ready' | 'not-available' | 'error';
+interface UpdateState {
+  status: UpdateStatus;
+  version?: string;
+  percent?: number;
+  message?: string;
+  checkedAt?: number;
+}
+
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // periodic re-check while the app stays open
+const UPDATE_RETRY_DELAY_MS = 10 * 60 * 1000;         // after a failed check (offline at launch, GitHub hiccup)
+// electron-builder's portable launcher sets this; portable builds cannot self-update
+const isPortableBuild = !!process.env.PORTABLE_EXECUTABLE_DIR;
+
+let updateState: UpdateState = { status: 'idle' };
+let updateRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function setUpdateState(next: UpdateState, channel?: string, ...args: any[]) {
+  updateState = next;
+  if (channel && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, ...args);
+  }
+}
+
+function runUpdateCheck(reason: 'startup' | 'periodic' | 'retry' | 'manual') {
+  if (isDev) return;
+  if (updateRetryTimer) { clearTimeout(updateRetryTimer); updateRetryTimer = null; }
+
+  if (isPortableBuild) {
+    const message = 'Portable build: download new versions from GitHub';
+    // Only surface this when the user asked explicitly; don't nag on every launch
+    setUpdateState({ status: 'unsupported', message }, reason === 'manual' ? 'update:error' : undefined, message);
+    return;
+  }
+
+  console.log(`[updater] Checking for updates (${reason}), current version ${app.getVersion()}`);
+  autoUpdater.checkForUpdates().catch((err) => {
+    // The 'error' event handler already reports and schedules a retry
+    console.error('[updater] checkForUpdates rejected:', err?.message || err);
+  });
+}
+
 function setupAutoUpdater() {
   if (isDev) return; // Skip in dev mode
 
@@ -729,37 +804,49 @@ function setupAutoUpdater() {
   // Stable builds default to 'latest' channel — no changes needed
 
   autoUpdater.on('checking-for-update', () => {
-    console.log('Checking for updates...');
-    mainWindow?.webContents.send('update:checking');
+    console.log('[updater] Checking for updates...');
+    setUpdateState({ status: 'checking' }, 'update:checking');
   });
 
   autoUpdater.on('update-available', (info) => {
-    console.log('Update available:', info.version);
-    mainWindow?.webContents.send('update:available', info.version);
+    console.log('[updater] Update available:', info.version);
+    setUpdateState({ status: 'available', version: info.version }, 'update:available', info.version);
   });
 
-  autoUpdater.on('update-not-available', () => {
-    console.log('No updates available');
-    mainWindow?.webContents.send('update:not-available');
+  autoUpdater.on('update-not-available', (info) => {
+    console.log(`[updater] No update available (latest ${info?.version ?? 'unknown'})`);
+    setUpdateState({ status: 'not-available', version: info?.version, checkedAt: Date.now() }, 'update:not-available');
   });
 
   autoUpdater.on('download-progress', (progress) => {
-    console.log(`Download progress: ${Math.round(progress.percent)}%`);
-    mainWindow?.webContents.send('update:progress', Math.round(progress.percent));
+    const percent = Math.round(progress.percent);
+    setUpdateState({ status: 'downloading', version: updateState.version, percent }, 'update:progress', percent);
   });
 
   autoUpdater.on('update-downloaded', (info) => {
-    console.log('Update downloaded:', info.version);
-    mainWindow?.webContents.send('update:ready', info.version);
+    console.log('[updater] Update downloaded:', info.version);
+    setUpdateState({ status: 'ready', version: info.version }, 'update:ready', info.version);
   });
 
   autoUpdater.on('error', (err) => {
-    console.error('Auto-updater error:', err.message);
-    mainWindow?.webContents.send('update:error', err.message);
+    console.error('[updater] error:', err.message);
+    setUpdateState({ status: 'error', message: err.message, checkedAt: Date.now() }, 'update:error', err.message);
+    // Network was probably down (laptop resume, captive portal, GitHub outage) — try again later
+    if (updateRetryTimer) clearTimeout(updateRetryTimer);
+    updateRetryTimer = setTimeout(() => runUpdateCheck('retry'), UPDATE_RETRY_DELAY_MS);
   });
 
-  // Check for updates on launch
-  autoUpdater.checkForUpdates().catch(() => {});
+  // First check only once the renderer is listening, otherwise the result is emitted into a
+  // window that hasn't mounted yet and the "update available" toast is silently lost.
+  const startFirstCheck = () => setTimeout(() => runUpdateCheck('startup'), 3000);
+  if (mainWindow && mainWindow.webContents.isLoading()) {
+    mainWindow.webContents.once('did-finish-load', startFirstCheck);
+  } else {
+    startFirstCheck();
+  }
+
+  // Keep checking while the app stays open
+  setInterval(() => runUpdateCheck('periodic'), UPDATE_CHECK_INTERVAL_MS);
 }
 
 // ── App Lifecycle ────────────────────────────────────────────────────

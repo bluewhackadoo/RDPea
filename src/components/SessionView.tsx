@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Pin, PinOff, Maximize2, Volume2, VolumeX,
@@ -81,16 +81,33 @@ const MODIFIER_CODES = [
 
 const MAX_DEBUG_LINES = 500;
 
+// ── Automatic reconnect policy ─────────────────────────────────────
+// After a failed connection attempt, retry every 10 s for up to 5 minutes,
+// then fall back to a manual "Retry Connection" button.
+const AUTO_RETRY_INTERVAL_MS = 10_000;
+const AUTO_RETRY_WINDOW_MS = 5 * 60_000;
+const AUTO_RETRY_MAX_ATTEMPTS = Math.floor(AUTO_RETRY_WINDOW_MS / AUTO_RETRY_INTERVAL_MS);
+// A connection attempt that produces neither "connected" nor an error within
+// this time is treated as failed so the retry loop can continue.
+const CONNECT_ATTEMPT_TIMEOUT_MS = 45_000;
+
 export function SessionView() {
   const { connectionId } = useParams<{ connectionId: string }>();
+  // Visible canvas: sized in *device* pixels to exactly match its on-screen footprint,
+  // so the compositor never resamples it (that resampling is what made sessions look fuzzy).
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const canvasCtxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const frontCtxRef = useRef<CanvasRenderingContext2D | null>(null);
+  // Back buffer: offscreen canvas at the remote desktop's native resolution.
+  const backCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const backCtxRef = useRef<CanvasRenderingContext2D | null>(null);
+  // Device pixels per remote pixel on each axis (1 = pixel-perfect).
+  const scaleRef = useRef({ x: 1, y: 1 });
+  const canvasSizeRef = useRef({ width: 1920, height: 1080 });
   const containerRef = useRef<HTMLDivElement>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const nextPlayTimeRef = useRef<number>(0);
   const mouseMoveTimeRef = useRef<number>(0);
   const lastHintRef = useRef(false);
-  const imgBufRef = useRef<Uint8ClampedArray | null>(null);
   const pressedModifiersRef = useRef<Set<string>>(new Set());
   const debugEndRef = useRef<HTMLDivElement>(null);
 
@@ -99,6 +116,7 @@ export function SessionView() {
   const [isConnecting, setIsConnecting] = useState(true); // Start as connecting since window opens on connect
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [failureSeq, setFailureSeq] = useState(0); // bumps on every failed attempt, even with an identical message
   const [canvasSize, setCanvasSize] = useState({ width: 1920, height: 1080 });
   const [showToolbar, setShowToolbar] = useState(true);
   const [toolbarHint, setToolbarHint] = useState(false);
@@ -107,40 +125,164 @@ export function SessionView() {
   const [debugOpen, setDebugOpen] = useState(false);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
 
+  // Auto-retry state
+  const [retryState, setRetryState] = useState<{ attempt: number; secondsLeft: number } | null>(null);
+  const [retryExhausted, setRetryExhausted] = useState(false);
+  const [autoRetryEnabled, setAutoRetryEnabled] = useState(true);
+  const retryWindowStartRef = useRef<number | null>(null);
+  const retryAttemptRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // ── Frame rendering with requestAnimationFrame batching ─────────
   const pendingRectsRef = useRef<BitmapRectIPC[]>([]);
   const rafIdRef = useRef<number>(0);
 
+  const getBackCtx = useCallback((width: number, height: number) => {
+    let back = backCanvasRef.current;
+    if (!back) {
+      back = document.createElement('canvas');
+      backCanvasRef.current = back;
+    }
+    if (back.width !== width || back.height !== height) {
+      back.width = width;
+      back.height = height;
+      backCtxRef.current = null;
+    }
+    if (!backCtxRef.current) backCtxRef.current = back.getContext('2d', { alpha: false });
+    return backCtxRef.current;
+  }, []);
+
+  const getFrontCtx = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    if (!frontCtxRef.current || frontCtxRef.current.canvas !== canvas) {
+      frontCtxRef.current = canvas.getContext('2d', { alpha: false });
+    }
+    return frontCtxRef.current;
+  }, []);
+
+  // Copy a region (in remote-desktop pixels) from the back buffer to the visible canvas.
+  // The destination is snapped to whole device pixels and the source recomputed through the
+  // same scale, so adjacent blits sample consistently and never leave seams.
+  const blit = useCallback((x: number, y: number, w: number, h: number) => {
+    const canvas = canvasRef.current;
+    const back = backCanvasRef.current;
+    const ctx = getFrontCtx();
+    if (!canvas || !back || !ctx) return;
+    const { x: sx, y: sy } = scaleRef.current;
+
+    if (sx === 1 && sy === 1) {
+      ctx.drawImage(back, x, y, w, h, x, y, w, h);
+      return;
+    }
+
+    // Exact integer upscales (2x, 3x…) look best with nearest-neighbour; everything else gets
+    // the highest-quality resampling the browser offers (much sharper than the compositor's bilinear).
+    const integerScale = Number.isInteger(sx) && Number.isInteger(sy);
+    ctx.imageSmoothingEnabled = !integerScale;
+    if (!integerScale) ctx.imageSmoothingQuality = 'high';
+
+    const dx0 = Math.max(0, Math.floor(x * sx));
+    const dy0 = Math.max(0, Math.floor(y * sy));
+    const dx1 = Math.min(canvas.width, Math.ceil((x + w) * sx));
+    const dy1 = Math.min(canvas.height, Math.ceil((y + h) * sy));
+    if (dx1 <= dx0 || dy1 <= dy0) return;
+    ctx.drawImage(
+      back,
+      dx0 / sx, dy0 / sy, (dx1 - dx0) / sx, (dy1 - dy0) / sy,
+      dx0, dy0, dx1 - dx0, dy1 - dy0,
+    );
+  }, [getFrontCtx]);
+
+  // Size and position the visible canvas so its backing store is exactly its device-pixel
+  // footprint. Prefers pixel-perfect 1:1 (or exact integer) scales whenever they fit.
+  const layoutViewport = useCallback(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+    const { width: rdpW, height: rdpH } = canvasSizeRef.current;
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = container.clientWidth;
+    const cssH = container.clientHeight;
+    if (cssW <= 0 || cssH <= 0 || rdpW <= 0 || rdpH <= 0) return;
+
+    const availW = Math.floor(cssW * dpr);
+    const availH = Math.floor(cssH * dpr);
+    let scale = Math.min(availW / rdpW, availH / rdpH);
+    const nearest = Math.round(scale);
+    if (nearest >= 1 && Math.abs(scale - nearest) / nearest < 0.02 && nearest * rdpW <= availW && nearest * rdpH <= availH) {
+      scale = nearest;
+    }
+
+    const devW = Math.max(1, Math.round(rdpW * scale));
+    const devH = Math.max(1, Math.round(rdpH * scale));
+    if (canvas.width !== devW || canvas.height !== devH) {
+      canvas.width = devW;
+      canvas.height = devH;
+    }
+    // Place the canvas on a whole device pixel; fractional CSS offsets are what cause blur.
+    canvas.style.width = `${devW / dpr}px`;
+    canvas.style.height = `${devH / dpr}px`;
+    canvas.style.left = `${Math.round((availW - devW) / 2) / dpr}px`;
+    canvas.style.top = `${Math.round((availH - devH) / 2) / dpr}px`;
+    scaleRef.current = { x: devW / rdpW, y: devH / rdpH };
+
+    // Repaint everything from the back buffer at the new size
+    if (backCanvasRef.current) blit(0, 0, rdpW, rdpH);
+  }, [blit]);
+
   const flushFrames = useCallback(() => {
     rafIdRef.current = 0;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    if (!canvasCtxRef.current) canvasCtxRef.current = canvas.getContext('2d');
-    const ctx = canvasCtxRef.current;
-    if (!ctx) return;
+    const { width: rdpW, height: rdpH } = canvasSizeRef.current;
+    const bctx = getBackCtx(rdpW, rdpH);
+    if (!bctx) return;
 
     const rects = pendingRectsRef.current;
     pendingRectsRef.current = [];
 
+    // Union of everything painted this frame → one scaled blit to the screen
+    let ux0 = Infinity, uy0 = Infinity, ux1 = -Infinity, uy1 = -Infinity;
     for (let i = 0; i < rects.length; i++) {
       const rect = rects[i];
       try {
         const src = rect.data;
-        const needed = src.length;
-        // Reuse buffer if same size, otherwise allocate new one
-        let bytes = imgBufRef.current;
-        if (!bytes || bytes.length !== needed) {
-          bytes = new Uint8ClampedArray(new ArrayBuffer(needed));
-          imgBufRef.current = bytes;
-        }
-        bytes.set(src);
-        const imgData = new ImageData(new Uint8ClampedArray(bytes.buffer as ArrayBuffer), rect.width, rect.height);
-        ctx.putImageData(imgData, rect.x, rect.y);
+        const needed = rect.width * rect.height * 4;
+        if (src.byteLength < needed) continue;
+        // Zero-copy: wrap the IPC buffer directly as clamped RGBA
+        const pixels = new Uint8ClampedArray(src.buffer as ArrayBuffer, src.byteOffset, needed);
+        bctx.putImageData(new ImageData(pixels, rect.width, rect.height), rect.x, rect.y);
+        if (rect.x < ux0) ux0 = rect.x;
+        if (rect.y < uy0) uy0 = rect.y;
+        if (rect.x + rect.width > ux1) ux1 = rect.x + rect.width;
+        if (rect.y + rect.height > uy1) uy1 = rect.y + rect.height;
       } catch {
         // skip bad frame
       }
     }
-  }, []);
+    if (ux1 > ux0 && uy1 > uy0) blit(ux0, uy0, ux1 - ux0, uy1 - uy0);
+  }, [getBackCtx, blit]);
+
+  // Keep the viewport laid out: on connect, on resolution change, on window resize, on DPI change
+  useLayoutEffect(() => {
+    canvasSizeRef.current = canvasSize;
+    if (!isConnected) return;
+    layoutViewport();
+
+    const container = containerRef.current;
+    const observer = container ? new ResizeObserver(() => layoutViewport()) : null;
+    if (container && observer) observer.observe(container);
+
+    const dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    const onDprChange = () => layoutViewport();
+    dprQuery.addEventListener('change', onDprChange);
+    window.addEventListener('resize', onDprChange);
+
+    return () => {
+      observer?.disconnect();
+      dprQuery.removeEventListener('change', onDprChange);
+      window.removeEventListener('resize', onDprChange);
+    };
+  }, [isConnected, canvasSize, layoutViewport]);
 
   const renderFrame = useCallback((rects: BitmapRectIPC[]) => {
     // Accumulate rects and schedule a single paint on next animation frame
@@ -225,14 +367,22 @@ export function SessionView() {
     const unsubConnected = window.rdpea.onConnected((id, info) => {
       if (id === connectionId) {
         setIsConnected(true); setIsConnecting(false); setErrorMsg(null);
-        if (info?.width && info?.height) setCanvasSize({ width: info.width, height: info.height });
+        // A successful connection resets the automatic retry budget
+        retryWindowStartRef.current = null;
+        retryAttemptRef.current = 0;
+        setRetryExhausted(false);
+        setAutoRetryEnabled(true);
+        if (info?.width && info?.height) {
+          canvasSizeRef.current = { width: info.width, height: info.height };
+          setCanvasSize({ width: info.width, height: info.height });
+        }
       }
     });
     const unsubDisconnected = window.rdpea.onDisconnected((id) => {
       if (id === connectionId) { setIsConnected(false); setIsConnecting(false); }
     });
     const unsubError = window.rdpea.onError((id, msg) => {
-      if (id === connectionId) { setErrorMsg(msg); setIsConnecting(false); }
+      if (id === connectionId) { setErrorMsg(msg); setIsConnecting(false); setFailureSeq((s) => s + 1); }
     });
 
     const unsubDebug = window.rdpea.onDebugLog((id, msg) => {
@@ -251,8 +401,10 @@ export function SessionView() {
       if (connectionId) window.rdpea?.setDebug(connectionId, enabled);
     });
 
-    // Check initial status
-    window.rdpea.getStatus(connectionId).then(setIsConnected);
+    // Check initial status (window may have been opened for a session that is already live)
+    window.rdpea.getStatus(connectionId).then((connected) => {
+      if (connected) { setIsConnected(true); setIsConnecting(false); }
+    });
 
     // Check if global debug was already enabled before this window opened
     window.rdpea.getDebugGlobal().then((enabled) => {
@@ -322,11 +474,14 @@ export function SessionView() {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
+    if (rect.width <= 0 || rect.height <= 0) return { x: 0, y: 0 };
+    // Map from on-screen CSS pixels to remote-desktop pixels
+    const { width: rdpW, height: rdpH } = canvasSizeRef.current;
+    const x = Math.round((e.clientX - rect.left) * (rdpW / rect.width));
+    const y = Math.round((e.clientY - rect.top) * (rdpH / rect.height));
     return {
-      x: Math.round((e.clientX - rect.left) * scaleX),
-      y: Math.round((e.clientY - rect.top) * scaleY),
+      x: Math.min(rdpW - 1, Math.max(0, x)),
+      y: Math.min(rdpH - 1, Math.max(0, y)),
     };
   }, []);
 
@@ -406,20 +561,102 @@ export function SessionView() {
     }
   }, [showToolbar]);
 
-  const handleReconnect = async () => {
+  const clearRetryTimer = useCallback(() => {
+    if (retryTimerRef.current) {
+      clearInterval(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+  }, []);
+
+  const fail = useCallback((message: string) => {
+    setErrorMsg(message);
+    setIsConnecting(false);
+    setFailureSeq((s) => s + 1);
+  }, []);
+
+  const handleReconnect = useCallback(async () => {
     if (!connectionId || !window.rdpea) return;
+    clearRetryTimer();
+    setRetryState(null);
     setErrorMsg(null);
     setIsConnecting(true);
     try {
       const connections = await window.rdpea.loadConnections();
       const conn = connections.find((c: any) => c.id === connectionId);
-      if (conn) {
-        await window.rdpea.connect(conn);
+      if (!conn) {
+        fail('Connection profile no longer exists');
+        return;
       }
-    } catch {
-      setIsConnecting(false);
+      const result = await window.rdpea.connect(conn);
+      if (!result?.success) fail(result?.error || 'Connection failed');
+    } catch (e: any) {
+      fail(e?.message || 'Connection failed');
     }
-  };
+  }, [connectionId, clearRetryTimer, fail]);
+
+  // Manual retry: the user explicitly wants to connect, so it also restarts the 5-minute auto-retry budget
+  const handleManualRetry = useCallback(() => {
+    retryWindowStartRef.current = null;
+    retryAttemptRef.current = 0;
+    setRetryExhausted(false);
+    setAutoRetryEnabled(true);
+    handleReconnect();
+  }, [handleReconnect]);
+
+  const stopAutoRetry = useCallback(() => {
+    clearRetryTimer();
+    setRetryState(null);
+    setAutoRetryEnabled(false);
+  }, [clearRetryTimer]);
+
+  // Guard against attempts that never resolve (no "connected" and no error)
+  useEffect(() => {
+    if (!isConnecting || isConnected || !connectionId) return;
+    const timer = setTimeout(() => {
+      window.rdpea?.disconnect(connectionId).catch(() => {});
+      fail(`Connection attempt timed out after ${CONNECT_ATTEMPT_TIMEOUT_MS / 1000}s`);
+    }, CONNECT_ATTEMPT_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [isConnecting, isConnected, connectionId, fail]);
+
+  // Automatic retry loop: after a failed attempt, retry every 10 s for up to 5 minutes
+  useEffect(() => {
+    if (!errorMsg || isConnected || isConnecting || !autoRetryEnabled) {
+      clearRetryTimer();
+      setRetryState(null);
+      return;
+    }
+
+    const now = Date.now();
+    if (retryWindowStartRef.current === null) {
+      retryWindowStartRef.current = now;
+      retryAttemptRef.current = 0;
+    }
+    const elapsed = now - retryWindowStartRef.current;
+    if (retryAttemptRef.current >= AUTO_RETRY_MAX_ATTEMPTS || elapsed + AUTO_RETRY_INTERVAL_MS > AUTO_RETRY_WINDOW_MS) {
+      // Budget spent — hand control back to the user
+      setRetryExhausted(true);
+      setRetryState(null);
+      return;
+    }
+
+    const attempt = retryAttemptRef.current + 1;
+    let secondsLeft = AUTO_RETRY_INTERVAL_MS / 1000;
+    setRetryExhausted(false);
+    setRetryState({ attempt, secondsLeft });
+    retryTimerRef.current = setInterval(() => {
+      secondsLeft -= 1;
+      if (secondsLeft <= 0) {
+        clearRetryTimer();
+        retryAttemptRef.current = attempt;
+        handleReconnect();
+      } else {
+        setRetryState({ attempt, secondsLeft });
+      }
+    }, 1000);
+
+    return clearRetryTimer;
+  }, [errorMsg, failureSeq, isConnected, isConnecting, autoRetryEnabled, clearRetryTimer, handleReconnect]);
 
   // Auto-scroll debug panel when new logs arrive
   useEffect(() => {
@@ -445,7 +682,7 @@ export function SessionView() {
             <span className="text-surface-600 text-xs">│</span>
             <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : isConnecting ? 'bg-amber-400 animate-pulse' : 'bg-surface-600'}`} />
             <span className="text-xs text-surface-400 truncate max-w-[200px]">
-              {isConnecting ? 'Connecting…' : isConnected ? 'Connected' : 'Disconnected'}
+              {isConnecting ? 'Connecting…' : isConnected ? 'Connected' : retryState ? `Retrying in ${retryState.secondsLeft}s` : 'Disconnected'}
               {connectionId && ` — ${connectionId.slice(0, 8)}`}
             </span>
           </div>
@@ -523,9 +760,7 @@ export function SessionView() {
         {isConnected ? (
           <canvas
             ref={canvasRef}
-            width={canvasSize.width}
-            height={canvasSize.height}
-            className="max-w-full max-h-full object-contain cursor-default"
+            className="absolute cursor-default"
             onMouseMove={handleMouseMove}
             onMouseDown={handleMouseDown}
             onMouseUp={handleMouseUp}
@@ -536,7 +771,11 @@ export function SessionView() {
           <div className="text-center">
             <Loader2 className="w-12 h-12 text-primary-400 mx-auto mb-4 animate-spin" />
             <h3 className="text-lg font-medium text-surface-300 mb-1">Connecting…</h3>
-            <p className="text-sm text-surface-500">Establishing RDP connection</p>
+            <p className="text-sm text-surface-500">
+              {retryAttemptRef.current > 0
+                ? `Retry attempt ${retryAttemptRef.current} of ${AUTO_RETRY_MAX_ATTEMPTS}`
+                : 'Establishing RDP connection'}
+            </p>
           </div>
         ) : (
           <div className="text-center max-w-md">
@@ -551,12 +790,33 @@ export function SessionView() {
                 {errorMsg}
               </p>
             )}
-            <button
-              onClick={handleReconnect}
-              className="mt-5 px-6 py-2.5 rounded-lg bg-primary-600 hover:bg-primary-500 text-white text-sm font-medium transition-colors shadow-lg shadow-primary-900/30"
-            >
-              {errorMsg ? 'Retry Connection' : 'Reconnect'}
-            </button>
+            {retryState && (
+              <p className="text-sm text-surface-400 mt-4">
+                Retrying automatically in <span className="text-surface-200 tabular-nums">{retryState.secondsLeft}s</span>
+                <span className="text-surface-600"> · attempt {retryState.attempt} of {AUTO_RETRY_MAX_ATTEMPTS}</span>
+              </p>
+            )}
+            {!retryState && errorMsg && retryExhausted && (
+              <p className="text-xs text-surface-500 mt-4">
+                Automatic retries stopped after {AUTO_RETRY_WINDOW_MS / 60_000} minutes.
+              </p>
+            )}
+            <div className="flex items-center justify-center gap-2 mt-5">
+              <button
+                onClick={handleManualRetry}
+                className="px-6 py-2.5 rounded-lg bg-primary-600 hover:bg-primary-500 text-white text-sm font-medium transition-colors shadow-lg shadow-primary-900/30"
+              >
+                {retryState ? 'Retry Now' : errorMsg ? 'Retry Connection' : 'Reconnect'}
+              </button>
+              {retryState && (
+                <button
+                  onClick={stopAutoRetry}
+                  className="px-4 py-2.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-surface-300 text-sm font-medium transition-colors"
+                >
+                  Stop
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>

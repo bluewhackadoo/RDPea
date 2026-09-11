@@ -78,3 +78,26 @@ bun run generate-icons
 
 The auto-updater respects channels: alpha/beta builds receive pre-release updates,
 stable builds only receive stable updates.
+
+## How releases reach the auto-updater (read before touching CI)
+
+The in-app updater (electron-updater, GitHub provider) only ever sees **published** releases:
+
+- It reads `https://github.com/bluewhackadoo/RDPea/releases.atom` (pre-release channels) or
+  `/releases/latest` (stable). **Draft releases appear in neither**, so a draft is invisible to
+  every installed client. electron-builder's `--publish` defaults to *draft* — the alpha/beta
+  workflows therefore stamp `build.publish.releaseType = "prerelease"` before building.
+- Alpha/beta clients (`allowPrerelease`) take the newest feed entry and read `alpha.yml`/`beta.yml`,
+  falling back to `latest.yml`, which is what electron-builder actually generates. Keep that file
+  attached to every pre-release.
+- Stable (`build.yml`) creates **one draft** for the tag up front, every platform uploads into it,
+  and `publish-release` flips it to published + latest only after the signed Windows build (with
+  its post-signing `latest.yml`) is attached. Clients never see a half-populated release. If a
+  platform job fails, re-run it: uploads use `--clobber`.
+- Never let a platform job call `electron-builder --publish` on the stable tag: that creates a
+  *second* draft with the same tag name and the platform's update manifest lands in the wrong place
+  (this is why `v1.1.0` shipped without macOS assets).
+
+Verify a deploy: the release must be non-draft, contain `latest.yml` (+ `latest-mac.yml`,
+`latest-linux.yml`) and the installer it references, and the `sha512` in `latest.yml` must match
+the uploaded (signed) exe.

@@ -9,6 +9,8 @@ export interface RdpConnection {
   gateway: string;
   width: number;
   height: number;
+  /** Negotiate the remote desktop at the session window's exact pixel size (sharp 1:1 rendering). */
+  fitToWindow: boolean;
   colorDepth: 16 | 24 | 32;
   audioMode: 'local' | 'remote' | 'none';
   redirectClipboard: boolean;
@@ -61,6 +63,14 @@ export interface AudioDataIPC {
   bitsPerSample: number;
 }
 
+export interface UpdateStateIPC {
+  status: 'idle' | 'unsupported' | 'checking' | 'available' | 'downloading' | 'ready' | 'not-available' | 'error';
+  version?: string;
+  percent?: number;
+  message?: string;
+  checkedAt?: number;
+}
+
 declare global {
   interface Window {
     rdpea: {
@@ -93,6 +103,7 @@ declare global {
       openExternal: (url: string) => void;
       checkForUpdates: () => void;
       restartAndInstall: () => void;
+      getUpdateState: () => Promise<UpdateStateIPC>;
       onUpdateChecking: (callback: () => void) => () => void;
       onUpdateAvailable: (callback: (version: string) => void) => () => void;
       onUpdateNotAvailable: (callback: () => void) => () => void;

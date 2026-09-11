@@ -22,6 +22,7 @@ export function createDefaultConnection(partial?: Partial<RdpConnection>): RdpCo
     gateway: '',
     width: 1920,
     height: 1080,
+    fitToWindow: true,
     colorDepth: 32,
     audioMode: 'local',
     redirectClipboard: true,
@@ -65,6 +66,7 @@ export function useConnections() {
             if (c.hyperVEnabled === undefined) c.hyperVEnabled = false;
             if (c.hyperVHost === undefined) c.hyperVHost = '';
             if (c.hyperVVmName === undefined) c.hyperVVmName = '';
+            if (c.fitToWindow === undefined) c.fitToWindow = true;
             return c;
           });
           setConnections(normalized);

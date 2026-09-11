@@ -35,6 +35,8 @@ jobs:
           $pkg.name = 'rdpea-beta'
           $pkg.build.appId = 'com.rdpea.app.beta'
           $pkg.build.productName = 'RDPea Beta'
+          # Publish as a *pre-release*, not a draft: drafts are invisible to the auto-updater
+          $pkg.build.publish | Add-Member -MemberType NoteProperty -Name releaseType -Value 'prerelease' -Force
           $pkg | ConvertTo-Json -Depth 20 | Set-Content package.json
           echo "BETA_VERSION=$beta" >> $env:GITHUB_ENV
 
